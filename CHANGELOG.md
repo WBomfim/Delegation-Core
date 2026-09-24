@@ -1,7 +1,34 @@
 # Changelog
 
-All notable changes to the Delegation-Core Office project (v0.1.0 to v0.13.0 / v13) are documented in this file.
+All notable changes to the Delegation Core project (v0.1.0 to v0.13.0 / v13) are documented in this file.
 This changelog is derived directly from the canonical versioning recorded across the codebase and vault archives.
+
+---
+
+## Unreleased
+
+### Added
+
+- **Declarative ingestion configuration**: Added `ingest_sources` and exclusion
+  patterns to configure allow-listed external document sources, per-source
+  settings, and safe exclusions before ingestion.
+- **Ingestion configuration guide**: Documented when and how to configure
+  recurring external sources after the initial setup.
+
+### Fixed
+
+- **Windows automatic startup**: Recreated the Startup launcher through the
+  virtual environment Python runtime instead of the blocked legacy executable.
+- **Cross-platform service checks**: Made service definition tests select the
+  platform-specific launcher behavior.
+- **Vault index reporting**: Distinguished physical Markdown files, indexed
+  documents, and ChromaDB chunks in startup metrics.
+- **Configuration permission handling**: Saved configuration permissions using
+  a filesystem path compatible with Windows.
+
+### Changed
+
+- **Repository hygiene**: Organized `.gitignore` rules into documented blocks.
 
 ---
 
