@@ -83,9 +83,13 @@ relative_to() instead of a string comparison).
 
 import asyncio
 import atexit
+import contextlib
+import faulthandler
+import functools
 import json
 import logging
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -97,6 +101,7 @@ from . import graphbridge
 from . import jobs
 from . import localqueue as _localqueue
 from . import notewriter as _notewriter
+from . import recuperacao
 from .auth import LocalTokenAuth
 from .client_tracking import ClientTrackingMiddleware as _ClientTrackingMiddleware
 from .client_tracking import cleanup_own_session_file as _cleanup_own_session_file
@@ -145,7 +150,110 @@ _vault:   VaultManager | None = None
 _tracker: ProcessTracker | None = None
 _ingest:  IngestManager | None = None
 
-mcp = FastMCP("delegation-core")
+# ── loop watchdog ─────────────────────────────────────────────────────────────
+#
+# On 2026-09-26 and again on 2026-09-29 the Mac daemon stayed up with port 8787
+# open and answered nothing: a thread stuck in chromadb, the loop behind it.
+# launchd restarts only a process that exits, so it stayed that way for days.
+#
+# faulthandler's timer runs on a C thread that needs no GIL, which is the point:
+# the stuck thread held the GIL, so no Python watchdog could have run. The loop
+# re-arms it every few seconds; if the loop stops, the timer fires, writes every
+# thread's stack to WATCHDOG_LOG (the diagnosis the Mac needed `sample` for),
+# and exits 1, which both launchd (SuccessfulExit false) and systemd
+# (Restart=on-failure) restart.
+
+WATCHDOG_LOG = Path.home() / ".delegation_core" / "watchdog_tracebacks.log"
+_watchdog_file = None
+
+
+def _arm_watchdog(timeout: float) -> bool:
+    """Arm (or re-arm) the exit timer. False when turned off or unavailable."""
+    global _watchdog_file
+    if not timeout or timeout <= 0:
+        return False
+    try:
+        if _watchdog_file is None:
+            WATCHDOG_LOG.parent.mkdir(parents=True, exist_ok=True)
+            _watchdog_file = open(WATCHDOG_LOG, "a", encoding="utf-8")
+        faulthandler.dump_traceback_later(timeout, exit=True, file=_watchdog_file)
+        return True
+    except Exception as e:  # pragma: no cover - platform without faulthandler timers
+        logger.warning("loop watchdog unavailable: %s", e)
+        return False
+
+
+async def _rearm_watchdog_forever(timeout: float, interval: float):
+    try:
+        while _arm_watchdog(timeout):
+            await asyncio.sleep(interval)
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_server):
+    timeout = getattr(_engine.cfg, "loop_watchdog_sec", 0) if _engine else 0
+    task = None
+    if timeout and timeout > 0:
+        task = asyncio.get_running_loop().create_task(
+            _rearm_watchdog_forever(timeout, min(30.0, timeout / 4)))
+        logger.info("loop watchdog on: exit after %ss without the event loop "
+                    "(stacks to %s)", timeout, WATCHDOG_LOG)
+    try:
+        yield {}
+    finally:
+        if task:
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+
+
+mcp = FastMCP("delegation-core", lifespan=_lifespan)
+
+
+def _retomar_reconstrucao_na_partida() -> threading.Thread:
+    """Espera o indice abrir e, havendo pedido de reconstrucao, a executa.
+
+    O pedido nasce em `recuperacao.pos_em_quarentena`, chamado de dentro da
+    abertura do indice, e sobrevive a reinicios: o daemon que cai no meio da
+    reconstrucao a retoma na proxima partida. Numa thread porque a abertura
+    carrega o BGE e o transporte tem que subir sem esperar por ela.
+
+    Submetida na familia `vault_reindex`, e nao numa propria: um reindex pedido
+    por hook durante a reconstrucao e absorvido por ela em vez de correr junto.
+    """
+    def _esperar_e_submeter():
+        try:
+            _vault._ensure_ready()
+        except Exception as e:
+            logger.warning("Indice nao abriu na partida (%s)", e)
+        if recuperacao.reconstrucao_pendente():
+            job_id = jobs.submit("vault_reindex:reconstrucao",
+                                 recuperacao.reconstruir, _vault, _ingest)
+            logger.warning("Reconstrucao do indice em andamento (job %s)", job_id)
+
+    t = threading.Thread(target=_esperar_e_submeter, daemon=True,
+                         name="reconstrucao-do-indice")
+    t.start()
+    return t
+
+# Tools that only call synchronous code are plain `def`: fastmcp (>=3.4, the
+# pinned floor) runs those in its threadpool. As `async def` they ran on the
+# event loop, so one call stuck inside chromadb froze every other request, which
+# is how the Mac daemon stopped answering on 2026-09-26.
+#
+# The loop used to serialise them for free. The ones that write keep that here,
+# so moving them to threads adds concurrency only between reads.
+_tool_write_lock = threading.Lock()
+
+
+def _serialized(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _tool_write_lock:
+            return fn(*args, **kwargs)
+    return wrapper
 
 
 # ── core ─────────────────────────────────────────────────────────────────────
@@ -296,8 +404,9 @@ async def search_vault(query: str, limit: int = 5, use_local: bool = False,
     titles and paths, since in agent mode every snippet is spent from your context.
     """
     scope = scope or _default_scope()
-    hits = _vault.search(query, limit=limit, scope=scope, graph=graph,
-                         snippet_chars=snippet_chars or 800, client=client)
+    hits = await asyncio.to_thread(_vault.search, query, limit=limit, scope=scope,
+                                   graph=graph, snippet_chars=snippet_chars or 800,
+                                   client=client)
     # Stating the scope on every response, not only on a miss: a caller reading
     # three results has no way to tell a narrow search from an exhaustive one.
     scope_used = "generated" if graph else scope
@@ -368,7 +477,7 @@ async def search_vault(query: str, limit: int = 5, use_local: bool = False,
 
 
 @mcp.tool()
-async def read_note(note_name: str) -> str:
+def read_note(note_name: str) -> str:
     """
     Read the full content of one specific vault note by filename stem (partial, case-insensitive).
     Use only when you need the complete text of a known note.
@@ -384,7 +493,8 @@ async def read_note(note_name: str) -> str:
 
 
 @mcp.tool()
-async def write_note(folder: str, title: str, content: str,
+@_serialized
+def write_note(folder: str, title: str, content: str,
                      ai_generated: bool = True) -> str:
     """
     Persist information to the vault and index it immediately with BGE embeddings.
@@ -483,25 +593,28 @@ async def vault_health_detail(limit: int = 50) -> str:
     pass that produces the counts, so they cannot disagree with them.
 
     Returns broken_link_items (source, folder, target), orphan_items,
-    needs_repair_items, truncated_items, and folder_marker_items — the last
-    being `[[reference]]`-style category markers that are deliberately NOT
-    counted as broken, listed so they are not "fixed" by mistake.
+    needs_repair_items, truncated_items, and two buckets of links that are
+    deliberately NOT counted as broken, listed so they are not "fixed" by
+    mistake: folder_marker_items, the `[[reference]]`-style category markers,
+    and ingested_link_items, links to files ingested from outside the vault,
+    which resolve through search_vault(scope="external").
     """
     return json.dumps(await asyncio.to_thread(_vault.health_detail, limit))
 
 
 @mcp.tool()
-async def vault_stats() -> str:
+def vault_stats() -> str:
     """Return note counts per vault folder, ChromaDB index size, and embedding model info."""
     return json.dumps(_vault.get_stats())
 
 
 @mcp.tool()
-async def heartbeat() -> str:
+async def heartbeat(force: bool = False) -> str:
     """
     CALL THIS at the start of every session before using any other tool.
     Returns llama.cpp status, vault stats, active background jobs, and configuration summary.
     If status is 'degraded', warn the user before proceeding.
+    Pass force=true to bypass the 5-minute vault_health cache and recalculate live.
     """
     cfg = _engine.cfg
     # In agent mode there is no local model, so llama being "offline" is the
@@ -518,16 +631,32 @@ async def heartbeat() -> str:
         llama_ok = await _engine.check_health()
         status, llama_state = ("healthy" if llama_ok else "degraded",
                                "online" if llama_ok else "offline")
+    stats, health, processes = await asyncio.to_thread(
+        lambda: (_vault.get_stats(), _vault.get_health_summary(force=force),
+                 _tracker.summary()))
+    # Um indice sendo reconstruido responde, mas responde pouco: sem isto a
+    # busca parece so pior, e nada diz que vai melhorar sozinha.
+    pedido = recuperacao.reconstrucao_pendente()
+    if pedido and status == "healthy":
+        status = "degraded"
     return json.dumps({
         "status":      status,
+        "index_recovery": pedido and {
+            "motivo": pedido.get("motivo"), "pedido_em": pedido.get("pedido_em"),
+            "quarentena": pedido.get("quarentena"),
+            "notas_feitas": pedido.get("notas_feitas"),
+            "fontes": f"{len(pedido.get('fontes_feitas') or [])}/{len(pedido.get('fontes') or [])}",
+            "detail": "the index crashed whoever opened it and was set aside; the "
+                      "daemon is rebuilding it from the vault and the ingest sources, "
+                      "and search fills in as it goes"},
         "timestamp":   datetime.now().isoformat(),
         "engine_mode": cfg.engine_mode,
         "llama_cpp":   llama_state,
         "llama_url":   cfg.llama_url,
-        "vault":       _vault.get_stats(),
-        "vault_health": _vault.get_health_summary(),
+        "vault":       stats,
+        "vault_health": health,
         "background_jobs": jobs.running_count(),
-        "processes":   _tracker.summary(),
+        "processes":   processes,
         "config": {
             "synthesis_enabled":  cfg.synthesis_enabled,
             "synthesis_lang":     cfg.synthesis_lang,
@@ -716,7 +845,8 @@ async def local_task_cancel(task_id: str) -> str:
 
 
 @mcp.tool()
-async def export_session(title: str, summary: str, key_decisions: str = "") -> str:
+@_serialized
+def export_session(title: str, summary: str, key_decisions: str = "") -> str:
     """
     Save a curated summary of this conversation to the vault's sessions/ folder.
     CALL THIS when the user signals they are ending the session — any variation of
@@ -756,7 +886,7 @@ async def run_maintenance() -> str:
 # ── maintenance ───────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def vault_list_notes(folder: str, limit: int = 20) -> str:
+def vault_list_notes(folder: str, limit: int = 20) -> str:
     """List notes in a vault folder sorted newest-first. Returns title, date, path, size.
 
     `count` is how many were returned; `total` is how many the folder holds.
@@ -774,7 +904,7 @@ async def vault_list_notes(folder: str, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def vault_find_notes(query: str, limit: int = 30) -> str:
+def vault_find_notes(query: str, limit: int = 30) -> str:
     """Find notes by literal title or path match — no embeddings, no threshold.
 
     Use this when you know what a note is CALLED. search_vault is semantic and
@@ -788,7 +918,8 @@ async def vault_find_notes(query: str, limit: int = 30) -> str:
 
 
 @mcp.tool()
-async def vault_rename_note(path: str, new_title: str) -> str:
+@_serialized
+def vault_rename_note(path: str, new_title: str) -> str:
     """Rename a note and repoint every [[wikilink]] that referenced it.
 
     Renaming a note by any other means breaks its inbound links silently — a
@@ -801,7 +932,7 @@ async def vault_rename_note(path: str, new_title: str) -> str:
 
 
 @mcp.tool()
-async def vault_note_links(path: str) -> str:
+def vault_note_links(path: str) -> str:
     """Inbound and outbound wikilinks for one note, by vault-relative path.
 
     Answers "what references this note" without reading every candidate. Broken
@@ -813,20 +944,21 @@ async def vault_note_links(path: str) -> str:
 
 
 @mcp.tool()
-async def vault_inbox_status() -> str:
+def vault_inbox_status() -> str:
     """Check what files are waiting in _inbox. Call BEFORE run_maintenance."""
     return json.dumps(_vault.inbox_status())
 
 
 @mcp.tool()
-async def vault_find_similar(note_name: str, threshold: float = 0.80, limit: int = 5) -> str:
+def vault_find_similar(note_name: str, threshold: float = 0.80, limit: int = 5) -> str:
     """Find notes semantically similar to the given note. Useful before merging."""
     results = _vault.find_similar(note_name, threshold=threshold, limit=limit)
     return json.dumps({"source_note": note_name, "threshold": threshold, "similar": results})
 
 
 @mcp.tool()
-async def vault_update_note(note_name: str, append_content: str) -> str:
+@_serialized
+def vault_update_note(note_name: str, append_content: str) -> str:
     """Append content to an existing note and re-index. Prefer over write_note for follow-ups."""
     result = _vault.update_note(note_name, append_content)
     if "error" not in result:
@@ -1278,7 +1410,7 @@ async def graph_build(path: str, name: str = "", force: bool = False,
 
 
 @mcp.tool()
-async def graph_list(name: str = "") -> str:
+def graph_list(name: str = "") -> str:
     """List previously built code graphs: name, source path, node/edge/community counts, last built.
 
     Vault note paths are returned as a count (`vault_notes_filed`). Pass `name` to
@@ -1315,7 +1447,7 @@ def _page_report(result: dict, offset: int, page_chars: int = GRAPH_REPORT_PAGE_
 
 
 @mcp.tool()
-async def graph_report(name: str, offset: int = 0) -> str:
+def graph_report(name: str, offset: int = 0) -> str:
     """Return the GRAPH_REPORT.md for a previously built graph by name (see graph_list).
 
     Long reports are paged. When `truncated` is true, call again with
@@ -1371,7 +1503,8 @@ async def graph_hook_status(path: str) -> str:
 # ── process tracking ──────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def process_create(name: str, description: str = "", steps: str = "") -> str:
+@_serialized
+def process_create(name: str, description: str = "", steps: str = "") -> str:
     """
     Track a new ongoing process that persists across sessions and server restarts.
     Use whenever a task spans multiple conversations or requires follow-up.
@@ -1382,7 +1515,7 @@ async def process_create(name: str, description: str = "", steps: str = "") -> s
 
 
 @mcp.tool()
-async def process_list(status: str = "active", query: str = "") -> str:
+def process_list(status: str = "active", query: str = "") -> str:
     """List tracked processes. status: active|paused|done|cancelled|all."""
     processes = _tracker.list_processes(status=status, query=query)
     return json.dumps({
@@ -1403,7 +1536,8 @@ async def process_list(status: str = "active", query: str = "") -> str:
 
 
 @mcp.tool()
-async def process_update(process_id: str, note: str = "", step_done: int = -1, status: str = "") -> str:
+@_serialized
+def process_update(process_id: str, note: str = "", step_done: int = -1, status: str = "") -> str:
     """Update a tracked process. All parameters optional — only set what changed."""
     _VALID_STATUSES = {"", "active", "paused", "done", "cancelled"}
     if status not in _VALID_STATUSES:
@@ -1415,7 +1549,7 @@ async def process_update(process_id: str, note: str = "", step_done: int = -1, s
 
 
 @mcp.tool()
-async def process_get(process_id: str) -> str:
+def process_get(process_id: str) -> str:
     """Get full details of a tracked process including all steps, notes, and history."""
     proc = _tracker.get(process_id)
     if proc is None:
@@ -1489,7 +1623,12 @@ def run_server(cfg: Config):
     # Dropping the hard exit is deliberate too: for a daemon that outlives every
     # client, dying on a transient GPU OOM is strictly worse than serving and
     # retrying, which is the behaviour _ensure_ready() was built for.
+    # Armed before anything that can hang, so a startup that deadlocks before
+    # the loop exists is covered too. The lifespan takes over re-arming.
+    _arm_watchdog(getattr(cfg, "loop_watchdog_sec", 0))
+
     _vault.warm_up()
+    _retomar_reconstrucao_na_partida()
 
     # The dashboard's JSON API, on the daemon's own VaultManager. It was a
     # sidecar the Tauri app spawned, which stopped making sense the moment this

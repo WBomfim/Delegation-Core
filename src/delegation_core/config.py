@@ -144,7 +144,7 @@ class Config:
     budget_mode: str = "normal"
 
     # ── v0.2: external ingestion (ABNER) ─────────────────────────────────────
-    ingest_chunk_size: int = 4000
+    ingest_chunk_size: int = 3072
     ingest_chunk_overlap: int = 200
 
     # ── v0.12: vault note chunking ───────────────────────────────────────────
@@ -155,8 +155,9 @@ class Config:
     # The remainder was unsearchable with nothing anywhere reporting it missing.
     # Notes are now chunked the way ingest.py has always chunked external files.
     # Sized in CHARACTERS (chunk_text splits on characters), see
-    # embed_max_seq_length for the token ceiling these must stay under.
-    vault_chunk_size: int = 4000
+    # embed_max_seq_length for the token ceiling these must stay under (3072 chars
+    # cleanly aligns with 1024 tokens for bge-m3 / bge-base).
+    vault_chunk_size: int = 3072
     vault_chunk_overlap: int = 200
 
     # ── v0.12: embedding execution limits ────────────────────────────────────
@@ -168,6 +169,11 @@ class Config:
     # 0 means "leave the model's own default alone".
     embed_max_seq_length: int = 2048
     embed_batch_size: int = 8
+    #: "auto" (o acelerador que existir), "cpu", "cuda" ou "mps". Existe porque
+    #: o BGE-m3 e o llama-server nao cabem juntos numa placa de 16 GB, e ate
+    #: 09/09/2026 a unica forma de por o encoder na CPU era esconder a placa do
+    #: processo inteiro com CUDA_VISIBLE_DEVICES= num drop-in de systemd.
+    embed_device: str = "auto"
 
     # ── v0.12: default search scope ──────────────────────────────────────────
     # "" means adaptive (decided per vault from how much of it is generated).
@@ -223,6 +229,21 @@ class Config:
     heal_per_run: int = 10
     never_merge_folders: list = field(default_factory=lambda: ["sessions"])
 
+    # ── daemon liveness ──────────────────────────────────────────────────────
+    # Seconds the daemon's event loop may stay stuck before the process dumps
+    # every thread's stack and exits 1, so launchd/systemd start a fresh one.
+    # 0 turns it off. A stuck loop answers nobody: clients give up after 10-30s,
+    # so 300 only ever ends a process that was already dead to every caller.
+    loop_watchdog_sec: int = 300
+
+    # ── onde mora o indice ───────────────────────────────────────────────────
+    # Vazio: `<vault>/.chroma_bge`, como sempre. Preenchido: o indice mora ali.
+    # Existe para o vault que fica numa pasta sincronizada (OneDrive, iCloud):
+    # sincronizacao mexendo no SQLite do Chroma sob um processo aberto danifica
+    # o indice. A recuperacao automatica preenche este campo sozinha quando poe
+    # em quarentena um indice nessa situacao. Ver recuperacao.py.
+    index_path: str = ""
+
     # ── v0.13.1: guard against a second index writer ─────────────────────────
     # When no daemon answers, index commands do the work in this process. That
     # is what keeps the CLI usable on a machine that never installed the
@@ -274,7 +295,7 @@ class Config:
     # from another machine: the token below is a guard against other *local*
     # processes, not a substitute for network isolation.
     server_host: str = "127.0.0.1"
-    server_port: int = 8787
+    server_port: int = 8797
     server_path: str = "/mcp"
 
     # Bearer token every client must present. Generated on first use by
@@ -347,6 +368,8 @@ class Config:
 
     @property
     def chroma_path(self) -> Path:
+        if str(self.index_path or "").strip():
+            return Path(self.index_path).expanduser()
         return self.vault / ".chroma_bge"
 
     @property
@@ -457,6 +480,10 @@ class Config:
     def load(cls) -> "Config":
         if CONFIG_FILE.exists():
             try:
+                try:
+                    CONFIG_FILE.chmod(0o600)
+                except OSError:
+                    pass
                 data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
                 known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
                 cfg = cls(**known)

@@ -715,6 +715,34 @@ def install_skills(root: Path) -> dict:
     return resultado
 
 
+def install_agents(root: Path) -> dict:
+    """Copy bundled agent definitions into ~/.claude/agents, never clobbering.
+
+    Same contract as `install_skills`, one directory over: agents are single
+    markdown files rather than folders. An agent the user already has by that
+    name is theirs, kept and reported as kept, because a subagent someone tuned
+    for their own workflow must not be silently replaced by a shipped one.
+    """
+    origem = root / "agents"
+    resultado: dict = {"installed": [], "kept_yours": [], "available": bool(origem.is_dir())}
+    if not origem.is_dir():
+        return resultado
+
+    destino_raiz = Path.home() / ".claude" / "agents"
+    destino_raiz.mkdir(parents=True, exist_ok=True)
+    for arquivo in sorted(origem.glob("*.md")):
+        destino = destino_raiz / arquivo.name
+        if destino.exists():
+            resultado["kept_yours"].append(arquivo.stem)
+            continue
+        try:
+            shutil.copy2(arquivo, destino)
+            resultado["installed"].append(arquivo.stem)
+        except OSError as e:
+            resultado.setdefault("errors", []).append({"agent": arquivo.stem, "error": str(e)})
+    return resultado
+
+
 def _dashboard_artifact(root: Path, subdir: str, sufixo: str) -> Path | None:
     pasta = root / "dashboard" / "src-tauri" / "target" / "release" / "bundle" / subdir
     if not pasta.is_dir():
@@ -971,6 +999,7 @@ def post_install(root: Path) -> dict:
 
     relatorio["docs_and_hooks"] = refresh_shipped_files(root)
     relatorio["skills"] = install_skills(root)
+    relatorio["agents"] = install_agents(root)
     relatorio["dashboard"] = install_dashboard(root)
 
     # The cached health file predates the recursive broken-link metric. Dropping

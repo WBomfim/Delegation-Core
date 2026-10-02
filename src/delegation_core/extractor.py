@@ -32,6 +32,7 @@ SUPPORTED: frozenset[str] = frozenset({
     ".xlsx",
     ".pptx",
     ".json",
+    ".yaml", ".yml",
 })
 
 
@@ -195,6 +196,8 @@ def extract(path: Path) -> str | None:
     Returns None if format is unsupported.
     """
     suffix = path.suffix.lower()
+    if path.name.startswith("~$"):
+        return None
     _map = {
         ".md":   _text,
         ".markdown": _text,
@@ -209,6 +212,8 @@ def extract(path: Path) -> str | None:
         ".xlsx": _xlsx,
         ".pptx": _pptx,
         ".json": _json,
+        ".yaml": _text,
+        ".yml":  _text,
     }
     fn = _map.get(suffix)
     if fn is None:
@@ -233,7 +238,7 @@ def format_label(path: Path) -> str:
         ".txt": "Text", ".text": "Text", ".csv": "CSV",
         ".html": "HTML", ".htm": "HTML", ".pdf": "PDF",
         ".docx": "Word", ".xlsx": "Excel", ".pptx": "PowerPoint",
-        ".json": "JSON",
+        ".json": "JSON", ".yaml": "YAML", ".yml": "YAML",
     }
     return labels.get(path.suffix.lower(), path.suffix.upper().lstrip("."))
 

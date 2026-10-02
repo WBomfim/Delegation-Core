@@ -75,6 +75,24 @@ def test_load_returns_defaults_when_no_file(monkeypatch, tmp_path):
 
     cfg = config_mod.Config.load()
     assert cfg.vault_path == ""
+    assert cfg.server_url == "http://127.0.0.1:8797/mcp"
+
+
+def test_load_preserves_existing_mcp_port(monkeypatch, tmp_path):
+    import json
+    import delegation_core.config as config_mod
+
+    config_file = tmp_path / "config.json"
+    monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config_mod, "CONFIG_FILE", config_file)
+
+    for port in (8787, 9999):
+        config_file.write_text(json.dumps({"server_port": port}), encoding="utf-8")
+        cfg = config_mod.Config.load()
+        assert cfg.server_url == f"http://127.0.0.1:{port}/mcp"
+
+    config_file.write_text("{}", encoding="utf-8")
+    assert config_mod.Config.load().server_url == "http://127.0.0.1:8797/mcp"
 
 
 def test_save_then_load_roundtrips(monkeypatch, tmp_path):

@@ -259,6 +259,7 @@ def test_a_crashing_index_does_not_send_the_reader_to_reindex(monkeypatch, cfg):
 
     assert "do not restart" in fix
     assert "reindex --force crashes" in fix
+    assert "recover-index" in fix
 
 
 def test_a_hanging_probe_is_bounded(monkeypatch, cfg):

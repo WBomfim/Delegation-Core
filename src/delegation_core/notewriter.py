@@ -89,7 +89,24 @@ def create_note(vault, folder: str, title: str, content: str,
         return {"error": f"Write failed: {e}"}
 
     rel = str(dest.relative_to(cfg.vault))
-    vault.index_note(full, {"title": title, "path": rel, "folder": folder})
+
+    # Carimbar aqui, e nao dentro do `index_note`. Medido em 26/09/2026:
+    # carimbar uma nota custa ~5 ms, desprezivel para uma escrita avulsa, mas
+    # o `reindex_vault` tambem passa pelo `index_note`, e la seriam 10.224
+    # leituras e escritas do mesmo arquivo, cerca de um minuto so de
+    # serializacao. O reindex ja carimba em lote no fim.
+    #
+    # Sem isto, a nota recem-escrita fica sem carimbo em `.chroma_index.json` e
+    # o proximo reindex incremental a reembute inteira, mesmo intocada. E o
+    # defeito que o `graphbridge` ja documentava para os artigos de grafo, e
+    # que ninguem tinha aplicado ao caminho de escrita de nota: medido, 12
+    # notas deste vault estavam nesse estado, todas escritas nesta noite.
+    #
+    # So em sucesso: `index_note` devolve False quando as linhas nao entraram,
+    # e carimbar assim mesmo faria todo reindex seguinte PULAR a nota que
+    # acabou de se perder.
+    if vault.index_note(full, {"title": title, "path": rel, "folder": folder}):
+        vault.stamp_indexed([rel])
     post_write_links(vault, dest, rel, folder, dest.stem)
     return {"status": "ok", "path": rel, "folder": folder, "name": dest.name}
 
@@ -117,7 +134,8 @@ def save_note(vault, rel_path: str, content: str) -> dict:
 
     rel = str(dest.relative_to(cfg.vault))
     folder = rel.split("/")[0]
-    vault.index_note(content, {"title": dest.stem, "path": rel, "folder": folder})
+    if vault.index_note(content, {"title": dest.stem, "path": rel, "folder": folder}):
+        vault.stamp_indexed([rel])
     try:
         from .config import vault_health_cache
         vault_health_cache().unlink(missing_ok=True)
@@ -236,12 +254,27 @@ def rename_note(vault, rel_path: str, new_title: str, retitle: bool = True) -> d
     new_rel = str(dest.relative_to(cfg.vault))
     folder = new_rel.split("/")[0]
     vault.delete_notes([rel_path])
-    vault.index_note(dest.read_text(encoding="utf-8"),
-                     {"title": new_title, "path": new_rel, "folder": folder})
+    # Carimbar o que indexou, e so o que indexou. Sem isto um rename deixa a
+    # nota renomeada E toda referente sem carimbo, e o proximo reindex
+    # "incremental" as reembute inteiras mesmo intocadas.
+    #
+    # Medido em 26/09/2026, e foi a propria operacao que revelou o defeito: um
+    # lote de 75 renomeacoes deixou EXATAMENTE 75 notas sem carimbo, e o
+    # reindex seguinte passou minutos reembutindo-as com o encoder na CPU.
+    # Este era o sexto caminho de escrita a indexar sem carimbar.
+    carimbar: list[str] = []
+    if vault.index_note(dest.read_text(encoding="utf-8"),
+                        {"title": new_title, "path": new_rel, "folder": folder}):
+        carimbar.append(new_rel)
     for path, _, after in staged[1:]:
         rel = str(path.relative_to(cfg.vault))
-        vault.index_note(after, {"title": path.stem, "path": rel,
-                                 "folder": rel.split("/")[0]})
+        if vault.index_note(after, {"title": path.stem, "path": rel,
+                                    "folder": rel.split("/")[0]}):
+            carimbar.append(rel)
+    # Em lote, numa escrita so do arquivo de estado: um rename toca ate dezenas
+    # de notas, e carimbar uma a uma reescreveria o arquivo inteiro a cada uma.
+    if carimbar:
+        vault.stamp_indexed(carimbar)
     try:
         from .config import vault_health_cache
         vault_health_cache().unlink(missing_ok=True)

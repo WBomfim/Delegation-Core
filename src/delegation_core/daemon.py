@@ -279,6 +279,17 @@ def submit_and_wait(cfg, tool: str, arguments: dict | None = None, *,
 
     ``on_wait(seconds, job)`` is called before each sleep, for progress output.
 
+    ``timeout`` bounds the whole operation, and that includes the tool call
+    itself. Until 26/09/2026 it bounded only the polling loop, and the call was
+    always capped at ``CALL_TIMEOUT_SEC``: a SYNCHRONOUS tool never reaches the
+    polling loop, so for one of those the argument governed nothing. Measured
+    that day on `vault_rename_note`, which takes 64 to 125 s on this vault
+    because it re-embeds every note whose links it repointed, with the encoder
+    on CPU: calls passing ``timeout=600`` failed at 123 s anyway, and about half
+    the batch died on a ceiling the caller believed it had lifted. The floor
+    stays at ``CALL_TIMEOUT_SEC`` so a caller asking for less than the default
+    cannot make an ordinary call more fragile than it was.
+
     The submit and every poll share one MCP session. A session per call also
     works, but each costs an initialize/GET/DELETE round trip and registers its
     own row in the daemon's connected-client tracking (one `maintain` showed up
@@ -288,9 +299,14 @@ def submit_and_wait(cfg, tool: str, arguments: dict | None = None, *,
         raise DaemonUnavailable(f"nothing listening on {cfg.server_host}:{cfg.server_port}")
 
     effective_timeout = float("inf") if (timeout is None or timeout <= 0) else float(timeout)
+    # `inf` means "wait as long as it takes" for the poll loop, but an HTTP
+    # client needs a number, so an unbounded wait keeps the default ceiling
+    # rather than being handed infinity.
+    call_timeout = (CALL_TIMEOUT_SEC if effective_timeout == float("inf")
+                    else max(CALL_TIMEOUT_SEC, effective_timeout))
 
     async def _session():
-        async with _build_client(cfg, CALL_TIMEOUT_SEC) as client:
+        async with _build_client(cfg, call_timeout) as client:
             submitted = _payload(await client.call_tool(tool, arguments or {}))
             job_id = submitted.get("job_id")
             if not job_id:

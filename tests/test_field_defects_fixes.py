@@ -50,6 +50,13 @@ class FakeVault:
     def index_note(self, content, metadata, doc_id=""):
         self.indexed.append({"content": content, "metadata": metadata, "doc_id": doc_id})
 
+
+    def stamp_indexed(self, rel_paths):
+        # Acompanha a interface real: o VaultManager carimba o indice
+        # incremental depois de indexar com sucesso. Um duble sem este metodo
+        # deixaria verde um caminho que producao executa.
+        self.carimbadas = getattr(self, "carimbadas", []) + list(rel_paths)
+        return len(rel_paths)
     def _ensure_ready(self):
         pass
 

@@ -60,6 +60,23 @@ def test_root_inalcancavel_nega(tmp_path: Path):
     assert _dentro_do_root(a / "x", tmp_path / "raiz") is False
 
 
+def test_laco_de_symlink_do_python_312_tambem_nega(tmp_path: Path, monkeypatch):
+    """No 3.12 um laco de symlink levanta RuntimeError, nao OSError. Medido num
+    Mac em 29/09/2026: o teste acima falhava la e passava aqui, em 3.14. O
+    RuntimeError e forcado para que a suite de qualquer versao veja o caso."""
+    from delegation_core.graph.extractors import resolution
+
+    def laco(self, *a, **k):
+        raise RuntimeError(f"Symlink loop from {self!s}")
+
+    monkeypatch.setattr(Path, "resolve", laco)
+
+    assert _dentro_do_root(tmp_path / "x", tmp_path / "raiz") is False
+    assert resolution._contained_in_package(tmp_path / "x", tmp_path) is False
+    with resolution.escopo_de_root(tmp_path):
+        pass
+
+
 # ── JS/TS ────────────────────────────────────────────────────────────────────
 
 def test_js_travessia_e_contida_com_root(arvore):

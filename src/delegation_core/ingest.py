@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import CONFIG_DIR
-from .embeddings import chunk_text
+from .embeddings import chunk_text, effective_chunk_chars
 from .vault import client_from_path
 
 logger = logging.getLogger("ingest")
@@ -109,6 +109,97 @@ def _remove_source_entry(source_key: str) -> bool:
     except Exception as e:
         logger.warning("Could not remove registry entry for %s: %s", source_key, e)
         return False
+
+
+def fontes_do_indice(chroma_dir: Path) -> dict[str, dict[str, str]]:
+    """As fontes ingeridas que um indice guarda: {fonte: {arquivo: ingested_at}}.
+
+    Lido do `chroma.sqlite3` com o sqlite da biblioteca padrao, em modo so
+    leitura, e nao pelo chromadb. E o que permite ler um indice que trava ou
+    derruba quem o abre pelo chromadb (o defeito vive no HNSW e no runtime em
+    Rust, nao nas tabelas), e ler o indice vivo sem ser um segundo escritor
+    ao lado do daemon.
+
+    Cada linha externa carrega `source_folder`, `path` e `ingested_at`
+    (ver `ingest`), entao o indice sabe tudo o que o registro sabia, menos
+    `recursive` e `exclude`.
+    """
+    import sqlite3
+
+    banco = Path(chroma_dir) / "chroma.sqlite3"
+    if not banco.exists():
+        return {}
+    conexao = sqlite3.connect(f"file:{banco}?mode=ro", uri=True, timeout=30)
+    try:
+        linhas = conexao.execute(
+            "SELECT id, key, string_value FROM embedding_metadata "
+            "WHERE key IN ('source_folder', 'path', 'ingested_at', 'is_external')"
+        ).fetchall()
+    finally:
+        conexao.close()
+
+    por_linha: dict[int, dict[str, str]] = {}
+    for linha_id, chave, valor in linhas:
+        por_linha.setdefault(linha_id, {})[chave] = valor
+    fontes: dict[str, dict[str, str]] = {}
+    for meta in por_linha.values():
+        if str(meta.get("is_external", "")).lower() != "true":
+            continue
+        fonte, arquivo = meta.get("source_folder"), meta.get("path")
+        if not fonte or not arquivo:
+            continue
+        arquivos = fontes.setdefault(fonte, {})
+        # Um arquivo em chunks tem uma linha por chunk, todas com o mesmo
+        # ingested_at; o maior cobre o caso de reingestao parcial.
+        arquivos[arquivo] = max(arquivos.get(arquivo, ""), meta.get("ingested_at") or "")
+    return fontes
+
+
+def reconstruir_registro_do_indice(chroma_dir: Path, carimbar_arquivos: bool) -> dict:
+    """Devolve as fontes do indice em `chroma_dir` somadas ao registro atual.
+
+    Existe porque em 29/09/2026 um teste gravou por cima do registro real em
+    duas maquinas (ver tests/test_guarda_de_estado.py), e o registro e a unica
+    coisa que diz quais fontes reingerir. O indice diz a mesma coisa, e estava
+    intacto: a reconstrucao le a lista dele, sem restaurar backup nenhum.
+
+    Entradas que o registro ja tem ficam como estao: e nelas que moram
+    `recursive` e `exclude`, que o indice nao guarda. Fonte que so o indice
+    conhece entra com `recursive: True`, o padrao de `ingest`.
+
+    `carimbar_arquivos`: True quando `chroma_dir` e o indice que vai continuar
+    em uso. Cada arquivo presente que nao mudou desde o `ingested_at` recebe o
+    carimbo de mtime e tamanho, e o proximo `ingest` o pula; um arquivo que
+    mudou fica sem carimbo e e reembutido. False quando o indice esta em
+    quarentena: as linhas dele nao existem no indice novo, entao nenhum
+    carimbo pode dizer que existem.
+    """
+    registro = _load_registry()
+    fontes = fontes_do_indice(chroma_dir)
+    novas = 0
+    for fonte, arquivos in fontes.items():
+        entrada = registro.get(fonte)
+        if not isinstance(entrada, dict):
+            entrada = {"recursive": True, "exclude": None, "files": {},
+                       "reconstruido_do_indice": True}
+            registro[fonte] = entrada
+            novas += 1
+        if not carimbar_arquivos:
+            continue
+        carimbos = entrada.setdefault("files", {})
+        for arquivo, ingerido_em in arquivos.items():
+            if arquivo in carimbos:
+                continue
+            try:
+                st = Path(arquivo).stat()
+                momento = datetime.fromisoformat(ingerido_em).timestamp()
+            except (OSError, ValueError):
+                continue
+            if st.st_mtime <= momento:
+                carimbos[arquivo] = [st.st_mtime, st.st_size]
+    logger.info("Registro de ingestao reconstruido de %s: %d fontes no indice, %d novas",
+                chroma_dir, len(fontes), novas)
+    return registro
 
 
 def _paged_get(collection, limit: int = 5000, **kwargs) -> dict:
@@ -252,6 +343,8 @@ class IngestManager:
         excluded: list[str] = []
 
         def _keep(f: Path) -> bool:
+            if f.name.startswith("~$"):
+                return False
             if is_excluded(f, source, patterns):
                 excluded.append(f.name)
                 return False
@@ -294,8 +387,12 @@ class IngestManager:
         errors: list[str] = []
         now = datetime.now().isoformat()
 
-        max_chars = self._cfg.ingest_chunk_size
-        overlap   = self._cfg.ingest_chunk_overlap
+        max_chars = effective_chunk_chars(
+            self._cfg.bge_model,
+            self._cfg.ingest_chunk_size,
+            self._cfg.embed_max_seq_length,
+        )
+        overlap = self._cfg.ingest_chunk_overlap
 
         registry = _load_registry()
         source_key = str(source)

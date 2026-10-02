@@ -39,6 +39,13 @@ class _VaultFalso:
         return True
 
 
+
+    def stamp_indexed(self, rel_paths):
+        # Acompanha a interface real: o VaultManager carimba o indice
+        # incremental depois de indexar com sucesso. Um duble sem este metodo
+        # deixaria verde um caminho que producao executa.
+        self.carimbadas = getattr(self, "carimbadas", []) + list(rel_paths)
+        return len(rel_paths)
 @pytest.fixture
 def vault(tmp_path):
     cfg = Config(vault_path=str(tmp_path),

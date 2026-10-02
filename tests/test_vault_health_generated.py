@@ -288,3 +288,49 @@ def test_health_detail_is_not_served_from_another_vaults_pass(tmp_path):
 
     assert VaultManager(a).health_detail()["broken_links"] == 1
     assert VaultManager(b).health_detail()["broken_links"] == 2
+
+
+def test_link_para_fonte_ingerida_nao_conta_como_quebrado(tmp_path, monkeypatch):
+    """Nota que cita arquivo ingerido de fora do vault aponta para algo que o
+    servidor acha, entao chamar de quebrado manda alguem consertar o que ja
+    funciona.
+
+    Medido neste vault em 24/09/2026: os 9 links quebrados restantes eram todos
+    notas citando arquivos de memoria do operador, e todos resolviam.
+    """
+    from delegation_core import notes as notes_mod
+    from delegation_core.vault import VaultManager
+
+    monkeypatch.setattr(
+        notes_mod, "_load_registry_for_links",
+        lambda: {"/fora/do/vault": {"files": {"/fora/do/vault/feedback_algo.md": [0, 1]}}})
+
+    cfg = _vault_with(tmp_path, "vi1")
+    (cfg.vault / "Reference" / "n.md").write_text(
+        "---\ntitle: n\n---\n\nVer [[feedback_algo]] e [[fantasma-real]].\n",
+        encoding="utf-8")
+
+    detail = VaultManager(cfg).health_detail()
+    assert detail["broken_links"] == 1, "so o fantasma conta"
+    assert [i["target"] for i in detail["broken_link_items"]] == ["fantasma-real"]
+    assert [i["target"] for i in detail["ingested_link_items"]] == ["feedback_algo"]
+
+
+def test_registro_de_ingestao_ilegivel_nao_derruba_a_checagem(tmp_path, monkeypatch):
+    """A checagem de saude nao pode estourar porque o registro de OUTRO
+    subsistema corrompeu: um numero levemente pessimista vale mais que nenhum.
+    """
+    from delegation_core import notes as notes_mod
+    from delegation_core.vault import VaultManager
+
+    def explode():
+        raise ValueError("registro corrompido")
+    monkeypatch.setattr(notes_mod, "_load_registry_for_links", explode)
+
+    cfg = _vault_with(tmp_path, "vi2")
+    (cfg.vault / "Reference" / "n.md").write_text(
+        "---\ntitle: n\n---\n\nVer [[feedback_algo]].\n", encoding="utf-8")
+
+    detail = VaultManager(cfg).health_detail()
+    assert detail["broken_links"] == 1, "sem registro, volta ao comportamento antigo"
+    assert detail["ingested_link_items"] == []

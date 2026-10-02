@@ -36,8 +36,9 @@ import threading
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from . import gpu
+from . import gpu, recuperacao
 from .config import Config
+from .index_lock import close_chroma_client, index_lock_of, reads_index, uses_index
 from .embeddings import (
     chunk_text,
     effective_chunk_chars,
@@ -53,6 +54,7 @@ logger = logging.getLogger("vault")
 # Extraidos para notes.py: sao funcoes puras, sem ChromaDB, e nove modulos as
 # importam daqui. Reexportadas para que `from .vault import safe_filename`
 # continue valendo — ha teste que falha se alguma sumir.
+from . import notes
 from .notes import (  # noqa: F401
     _CHUNK_SUFFIX_RE,
     _CODE_SPAN_RE,
@@ -66,6 +68,7 @@ from .notes import (  # noqa: F401
     client_from_path,
     client_slug,
     compose_note,
+    ingested_link_stems,
     link_names_for_stem,
     resolve_in_vault,
     resolve_vault_folder,
@@ -83,7 +86,6 @@ same VaultManager and ChromaDB collection as the main event loop. ChromaDB's
 embedded client is not thread-safe for concurrent writes. This lock serialises
 index_note() calls across both paths.
 """
-
 
 
 def _frontmatter_parses(content: str) -> bool:
@@ -119,8 +121,6 @@ def _frontmatter_parses(content: str) -> bool:
     return True
 
 
-
-
 class VaultManager:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -128,6 +128,7 @@ class VaultManager:
         self.ef = None
         self._initialized = False
         self._init_lock = threading.Lock()
+        self._client = None
         self._disk_state: tuple | None = None
         # Registered so the arbiter can drop this manager's `ef` and
         # `collection` when llama.cpp needs the card. Those two are the
@@ -167,21 +168,24 @@ class VaultManager:
         current = self._read_disk_state()
         if current is None or current == self._disk_state:
             return
-        logger.info("Index changed on disk by another process — reopening")
-        # Constructing a new PersistentClient is not enough on its own: chromadb
-        # caches one System per path for the life of the process, so the "new"
-        # client shares the stale segment state and keeps failing filtered
-        # queries with "Error finding id" even while reporting the new row count.
-        # Dropping that cache is what makes the reopen equivalent to the fresh
-        # process that reads the same index correctly.
-        try:
-            from chromadb.api.client import SharedSystemClient
-            SharedSystemClient.clear_system_cache()
-        except Exception as e:  # pragma: no cover - depends on chromadb internals
-            logger.warning("Could not clear chromadb system cache: %s", e)
-        self._initialized = False
-        self.collection = None
-        self._init()
+        # A thread already holding the index shared would wait on itself for the
+        # exclusive lock. The change stays pending and the next call reopens.
+        if index_lock_of(self).held_here():
+            return
+        with index_lock_of(self).exclusive():
+            # Another thread may have reopened while this one waited.
+            current = self._read_disk_state()
+            if not self._initialized or current is None or current == self._disk_state:
+                return
+            logger.info("Index changed on disk by another process — reopening")
+            self._close_client()
+            self._initialized = False
+            self.collection = None
+            self._init()
+
+    def _close_client(self) -> None:
+        client, self._client = getattr(self, "_client", None), None
+        close_chroma_client(client)
 
     def _init(self):
         with self._init_lock:
@@ -220,7 +224,8 @@ class VaultManager:
                         self.cfg.bge_model,
                         max_seq_length=self.cfg.embed_max_seq_length,
                         batch_size=self.cfg.embed_batch_size,
-                    )
+                        device=getattr(self.cfg, "embed_device", "auto"))
+                recuperacao.antes_de_abrir(self.cfg)  # pode trocar o indice por um novo
                 client = chromadb.PersistentClient(
                     path=str(self.cfg.chroma_path),
                     settings=chromadb.Settings(anonymized_telemetry=False),
@@ -230,6 +235,7 @@ class VaultManager:
                 except Exception as e:
                     logger.warning("Legacy collection rename check failed: %s", e)
 
+                self._client = client
                 self.collection = client.get_or_create_collection(
                     name=self.cfg.collection_name,
                     embedding_function=self.ef,
@@ -238,17 +244,15 @@ class VaultManager:
             except Exception as e:
                 logger.error("ChromaDB/BGE init failed: %s — vault will retry on next call", e)
                 return  # do NOT set _initialized; leave it False so _ensure_ready() retries
-            # Taken after the open, so a write that lands mid-open is seen as a
-            # change on the next call rather than being missed for the session.
+            # Taken after the open: a write landing mid-open shows up next call.
             self._disk_state = self._read_disk_state()
             self._initialized = True  # only reached on successful init
             stats = self.get_stats()
-            logger.info(
-                "ChromaDB ready — %d chunks across, %d indexed documents; "
-                "%d Markdown notes in vault (%s)",
-                stats["indexed_rows"], stats["indexed_notes"],
-                stats["vault_markdown_files"], self.cfg.collection_name,
-            )
+            recuperacao.depois_de_abrir(self.cfg)
+            logger.info("ChromaDB ready — %d chunks across, %d indexed documents; "
+                        "%d Markdown notes in vault (%s)", stats["indexed_rows"],
+                        stats["indexed_notes"], stats["vault_markdown_files"],
+                        self.cfg.collection_name)
 
     def _adopt_legacy_collection(self, client) -> None:
         """Rename a pre-derivation collection to the model-derived name, if compatible.
@@ -378,6 +382,7 @@ class VaultManager:
             meta["graph"] = graph
         return meta
 
+    @uses_index
     def search(self, query: str, limit: int = 5, scope: str = "all",
                graph: str = "", snippet_chars: int = 800, client: str = "") -> list[dict]:
         """Semantic search, optionally narrowed to one kind of indexed content.
@@ -516,6 +521,7 @@ class VaultManager:
 
     # ── write / index ────────────────────────────────────────────────────────
 
+    @uses_index
     def index_note(self, content: str, metadata: dict, doc_id: str = "") -> bool:
         """Upsert content into ChromaDB. Returns True when the rows landed.
 
@@ -683,6 +689,7 @@ class VaultManager:
             return False
         return True
 
+    @uses_index
     def delete_notes(self, rel_paths: list[str]) -> int:
         """Drop notes from ChromaDB and the incremental index state by vault-relative path.
 
@@ -724,10 +731,11 @@ class VaultManager:
         except Exception as e:
             logger.warning("Delete error: %s", e)
             return 0
-        state = self._load_index_state()
-        for p in rel_paths:
-            state.pop(p, None)
-        self._save_index_state(state)
+        def sem_os_apagados(estado):
+            for p in rel_paths:
+                estado.pop(p, None)
+            return estado
+        self._update_index_state(sem_os_apagados)
         return len(rel_paths)
 
     # ── incremental index state ───────────────────────────────────────────────
@@ -749,46 +757,23 @@ class VaultManager:
     _SCHEMA_KEY = "__schema__"
 
     def _index_state_path(self) -> Path:
-        return self.cfg.vault / ".chroma_index.json"
+        return notes.caminho_do_estado(self.cfg.vault)
 
     def _load_index_state(self) -> dict[str, float]:
-        p = self._index_state_path()
-        if p.exists():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception as e:
-                # Was `except Exception: pass`, completely silent. Answering {}
-                # is the right call -- every note looks unstamped and the next
-                # run re-embeds it, which is correct, just slow -- but the
-                # SYMPTOM is an "incremental" reindex that runs for minutes with
-                # nothing anywhere saying why. This file holds 8.594 stamps and
-                # 634 KB on this vault; the run-time history has a 642.3s entry.
-                logger.warning(
-                    "index state at %s is unreadable (%s) - every note will be "
-                    "treated as unstamped and re-embedded on the next reindex", p, e)
-        return {}
+        return notes.carregar_estado(self._index_state_path())
 
     def _save_index_state(self, state: dict[str, float]):
-        """Atomic: a torn write here costs a full re-embed of the whole vault.
+        notes.gravar_estado(self._index_state_path(), state)
 
-        `write_text` truncates first, and this file is 634 KB on this machine,
-        so the window is not theoretical. `_load_index_state` reads a damaged
-        file as "nothing is stamped".
+    def _update_index_state(self, modificar) -> dict:
+        """Ler-modificar-escrever do estado do indice sob trava.
+
+        Todo escritor deste arquivo passa por aqui. Ver `notes.atualizar_estado`
+        para o defeito medido que exigiu a trava: escrita atomica sozinha nao
+        impede que o ultimo a gravar apague o carimbo do outro.
         """
-        destino = self._index_state_path()
-        tmp = destino.with_suffix(".json.tmp")
-        try:
-            with tmp.open("w", encoding="utf-8") as fh:
-                json.dump(state, fh, indent=2)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, destino)
-        except Exception as e:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-            logger.warning("Could not save index state: %s", e)
+        return notes.atualizar_estado(self._index_state_path(), modificar)
+
 
     def stamp_indexed(self, rel_paths: list[str]) -> int:
         """Record that these notes are current in the index. Returns how many.
@@ -823,18 +808,17 @@ class VaultManager:
         """
         if not rel_paths:
             return 0
-        state = self._load_index_state()
-        stamped = 0
+        novos: dict[str, float] = {}
         for rel in rel_paths:
             try:
-                state[rel] = (self.cfg.vault / rel).stat().st_mtime
-                stamped += 1
+                novos[rel] = (self.cfg.vault / rel).stat().st_mtime
             except OSError:
                 continue
-        if stamped:
-            self._save_index_state(state)
-        return stamped
+        if novos:
+            self._update_index_state(lambda estado: {**estado, **novos})
+        return len(novos)
 
+    @reads_index
     def _unindexed_notes(self, notes: list[dict]) -> list[dict]:
         """Notes that exist on disk and have no rows in the index.
 
@@ -886,6 +870,7 @@ class VaultManager:
         return [{"rel": n["rel"], "folder": n["folder"], "stem": n["stem"]}
                 for n in notes if n.get("rel") and n["rel"] not in indexed]
 
+    @reads_index
     def _paged_get(self, limit: int = 5000, **kwargs) -> dict:
         """Safely fetch all matching rows from ChromaDB in batches to prevent SQLite variable limits."""
         if not self.collection:
@@ -910,6 +895,7 @@ class VaultManager:
             # Fallback for test mocks or custom wrappers
             return self.collection.get(**kwargs)
 
+    @uses_index
     def reindex_vault(self, force: bool = False) -> int:
         """Reindex markdown notes in configured vault folders.
 
@@ -925,6 +911,7 @@ class VaultManager:
             return 0
 
         state = {} if force else self._load_index_state()
+        descartou_o_estado = bool(force)
         # A state file written under an older row shape certifies nothing about
         # the rows in ChromaDB now, so the mtimes in it must not be allowed to
         # skip anything. Popped either way, so the reserved key is never walked
@@ -935,6 +922,7 @@ class VaultManager:
             if state:
                 logger.info("Index state schema changed — re-indexing every note once")
             state = {}
+            descartou_o_estado = True
         count = 0
         skipped = 0
         on_disk: set[str] = set()
@@ -1032,8 +1020,16 @@ class VaultManager:
         except Exception as e:
             logger.warning("Orphan cleanup failed: %s", e)
 
-        state[self._SCHEMA_KEY] = self._INDEX_SCHEMA
-        self._save_index_state(state)
+        # Mesclar, e nao sobrescrever: a passagem acima leva minutos, e um
+        # `stamp_indexed` de outra thread nesse meio tempo era perdido aqui.
+        # Em `force` (ou esquema trocado) o descarte e deliberado, entao o
+        # estado em disco e ignorado de proposito.
+        def resultado_da_passagem(estado):
+            base = {} if descartou_o_estado else estado
+            base.update(state)
+            base[self._SCHEMA_KEY] = self._INDEX_SCHEMA
+            return base
+        self._update_index_state(resultado_da_passagem)
         if skipped:
             logger.info("Reindex: %d indexed, %d unchanged (skipped)", count, skipped)
         return count
@@ -1304,6 +1300,7 @@ class VaultManager:
             )
         return matches
 
+    @uses_index
     def find_similar(self, note_name: str, threshold: float = 0.80, limit: int = 5) -> list[dict]:
         """Find notes semantically similar to the given note."""
         self._ensure_ready()
@@ -1454,6 +1451,12 @@ class VaultManager:
         # Folder names (and the vault's own name) used as markers, lowercased.
         folder_markers = {f.lower() for f in self.cfg.vault_folders}
         folder_markers.add(self.cfg.vault.name.lower())
+
+        # Links para arquivo ingerido de fora do vault nao sao quebrados:
+        # apontam para algo que search_vault(scope='external') acha. Saem em
+        # balde proprio, como os marcadores de pasta, para a contagem dizer
+        # de que tipo e cada link em vez de esconder a diferenca.
+        ingested = ingested_link_stems()
         total = needs_repair = truncated = orphans = broken_links = 0
         malformed_frontmatter = 0
         malformed_notes: list[dict] = []
@@ -1461,6 +1464,7 @@ class VaultManager:
         # is that the detail and the summary cannot disagree.
         broken: list[dict] = []
         markers: list[dict] = []
+        ingested_links: list[dict] = []
         orphan_notes: list[dict] = []
         repair_notes: list[dict] = []
         truncated_notes: list[dict] = []
@@ -1543,6 +1547,10 @@ class VaultManager:
                         # to a note. 12 of the 26 "broken links" were these, and
                         # no note will ever exist to satisfy them.
                         markers.append({"source": n["stem"], "target": link})
+                    elif key in ingested:
+                        ingested_links.append({"source": n["stem"],
+                                               "folder": n["folder"],
+                                               "target": link})
                     else:
                         broken_links += 1
                         broken.append({"source": n["stem"], "folder": n["folder"],
@@ -1585,6 +1593,7 @@ class VaultManager:
             "truncated_items": truncated_notes,
             "malformed_frontmatter_items": malformed_notes,
             "folder_marker_items": markers,
+            "ingested_link_items": ingested_links,
             "unindexed_items": unindexed_notes,
         }
         try:
@@ -1708,6 +1717,7 @@ class VaultManager:
 
     # ── stats ─────────────────────────────────────────────────────────────────
 
+    @reads_index
     def _client_counts(self) -> dict:
         """{client slug: distinct documents} over the whole index.
 
@@ -1766,6 +1776,7 @@ class VaultManager:
             "folder_counts": folder_counts,
         }
 
+    @reads_index
     def _index_counts(self) -> tuple[int, int]:
         """(rows, distinct documents) in the collection.
 

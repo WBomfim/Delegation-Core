@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 import httpx
 import requests
 
+from . import gpu
 from .config import Config
 
 logger = logging.getLogger("engine")
@@ -152,6 +153,10 @@ class DelegationEngine:
         self._start_lock = threading.Lock()
         self._http: httpx.AsyncClient | None = None
         atexit.register(self._shutdown)
+        # The arbiter evicts BGE before this engine spawns llama.cpp, and needs
+        # a handle to do it through. Weakref-held, so registering does not keep
+        # a throwaway engine alive.
+        gpu.register_llama_owner(self)
 
     # ── async HTTP client ─────────────────────────────────────────────────────
 
@@ -542,9 +547,26 @@ class DelegationEngine:
             "--model", str(model),
             "--port", str(self.cfg.llama_port),
             "--ctx-size", str(self.cfg.llama_ctx),
-            "--n-gpu-layers", str(self.cfg.llama_ngl),
         ]
+        # llama_ngl <= 0 means "let llama.cpp fit the layers to whatever is
+        # free". Passing the flag at all disables that fitting: with
+        # --n-gpu-layers 999 the loader logs "n_gpu_layers already set by user
+        # to 999, abort" and then dies at cudaMalloc, which is precisely the
+        # failure on a card that another process is sharing. An explicit
+        # positive value is still honoured for anyone who wants to pin it.
+        if self.cfg.llama_ngl > 0:
+            cmd += ["--n-gpu-layers", str(self.cfg.llama_ngl)]
+        # Flash attention plus an 8-bit KV cache. Measured on the 16 GB board
+        # this runs on: with an f16 KV cache the weights fit and the load then
+        # failed 132 MiB short on the compute buffer, so this is the margin
+        # between loading and not loading, not a tuning preference.
+        cmd += ["-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0"]
         logger.info("Starting llama.cpp: %s", " ".join(cmd))
+
+        # Take the card before spawning. BGE and a 12B model do not both fit,
+        # and the eviction has to happen before Popen rather than after a
+        # failed load: llama.cpp does not retry, it exits.
+        gpu.take("llama")
 
         try:
             # llama.cpp's stdout/stderr are redirected straight into this file

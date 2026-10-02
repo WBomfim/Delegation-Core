@@ -126,12 +126,12 @@ Source text:
 # ── Portuguese prompts (MAURICIO deployment) ─────────────────────────────────
 
 _PT_SYSTEM = (
-    "Você produz notas Obsidian Markdown limpas. Output: apenas Markdown — "
+    "Você produz notas Obsidian Markdown limpas em português do Brasil (PT-BR). Output: apenas Markdown — "
     "sem preâmbulo, sem comentários, sem blocos de código envoltórios."
 )
 
 _PT_DOC_PROMPT = """\
-Sintetize o texto-fonte abaixo em uma nota Obsidian Markdown.
+Sintetize o texto-fonte abaixo em uma nota Obsidian Markdown em português do Brasil (PT-BR).
 
 OUTPUT: apenas o Markdown da nota. Sem preâmbulo, sem explicação posterior, sem comentários sobre a tarefa, sem blocos ```markdown``` envoltórios.
 
@@ -158,6 +158,7 @@ tags: [<tags-em-kebab-case>]
 - [ ] <ação específica + responsável quando identificado>
 
 REGRAS:
+- Escreva a síntese estritamente em português do Brasil (PT-BR).
 - Preserve TODOS os números, percentuais, valores em R$ exatamente como no texto.
 - Se uma seção não tem matéria-prima, OMITA-a inteiramente. NUNCA escreva placeholders.
 - NÃO copie estas instruções nem os metadados do sidecar como conteúdo da nota.
@@ -175,7 +176,7 @@ Texto-fonte:
 """
 
 _PT_MEETING_PROMPT = """\
-Sintetize esta reunião/ata em uma nota Obsidian Markdown.
+Sintetize esta reunião/ata em uma nota Obsidian Markdown em português do Brasil (PT-BR).
 
 OUTPUT: apenas o Markdown da nota. Sem preâmbulo, sem explicação posterior, sem blocos ```markdown``` envoltórios.
 
@@ -208,6 +209,7 @@ tags: [<tags-em-kebab-case>]
 - "<citação direta>" — <participante>
 
 REGRAS:
+- Escreva a síntese estritamente em português do Brasil (PT-BR).
 - Preserve TODOS os números exatamente.
 - NUNCA invente nomes ou papéis.
 - Se uma seção não tem matéria-prima, OMITA-a. NUNCA escreva placeholders.

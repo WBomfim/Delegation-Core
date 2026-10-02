@@ -26,6 +26,8 @@ que este fixture instalou.
 """
 from __future__ import annotations
 
+import importlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -53,6 +55,40 @@ _MODULOS_COM_COPIA = (
 )
 
 
+#: O estado real, calculado antes de qualquer teste mexer em HOME ou em modulo.
+_ESTADO_REAL = (Path.home() / ".delegation_core").absolute()
+
+
+def _dentro_do_estado_real(caminho: Path) -> bool:
+    try:
+        return Path(caminho).absolute().is_relative_to(_ESTADO_REAL)
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+_PACOTE_IMPORTADO = False
+
+
+def _importar_o_pacote_inteiro():
+    """Importa todo submodulo, para que a varredura abaixo alcance os
+    caminhos de modulo que um teste so importaria depois do fixture. Uma vez
+    por sessao: depois disso os modulos ja estao em sys.modules."""
+    global _PACOTE_IMPORTADO
+    if _PACOTE_IMPORTADO:
+        return
+    _PACOTE_IMPORTADO = True
+    import pkgutil
+
+    import delegation_core
+    for info in pkgutil.walk_packages(delegation_core.__path__, "delegation_core."):
+        if info.name.endswith("__main__"):
+            continue          # importar __main__ executa a CLI com o argv do pytest
+        try:
+            importlib.import_module(info.name)
+        except Exception:
+            continue          # extra opcional ausente nao pode quebrar a suite
+
+
 @pytest.fixture(autouse=True)
 def _sem_escrita_no_estado_real(tmp_path, monkeypatch):
     """Reaponta todo caminho de estado do usuario para um diretorio temporario."""
@@ -78,6 +114,24 @@ def _sem_escrita_no_estado_real(tmp_path, monkeypatch):
                                 ("STORE_PATH", raiz / "local_tasks.json")):
             if hasattr(mod, atributo):
                 monkeypatch.setattr(mod, atributo, valor, raising=False)
+
+    # Qualquer OUTRO caminho de modulo que caia dentro do estado real, com
+    # qualquer nome. A lista acima cobre CONFIG_DIR, CONFIG_FILE e STORE_PATH,
+    # e em 29/09/2026 isso nao bastou: `ingest._REGISTRY_FILE` e calculado no
+    # import, nenhum dos tres nomes o alcanca, e um teste novo que chamou
+    # `_save_registry` sem reapontar o nome a mao gravou uma fonte do pytest
+    # por cima do `ingested_sources.json` real. Aconteceu em duas maquinas:
+    # aqui o registro de 23 fontes virou 1, e num Mac o de 172 virou 1, o que
+    # fez a reconstrucao do indice de la pular todas as fontes externas. Oito
+    # testes ja faziam o reapontamento a mao; o nono esqueceu.
+    _importar_o_pacote_inteiro()
+    for nome, mod in list(sys.modules.items()):
+        if not nome.startswith("delegation_core") or mod is None:
+            continue
+        for atributo, valor in list(vars(mod).items()):
+            if isinstance(valor, Path) and _dentro_do_estado_real(valor):
+                monkeypatch.setattr(mod, atributo,
+                                    raiz / valor.relative_to(_ESTADO_REAL), raising=False)
 
     yield raiz
 
