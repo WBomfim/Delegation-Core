@@ -269,6 +269,10 @@ def cmd_post_install(args):
     if pele["available"]:
         console.print(f"  skills: {len(pele['installed'])} installed, "
                       f"{len(pele['kept_yours'])} kept yours")
+    agentes = r.get("agents", {})
+    if agentes.get("available"):
+        console.print(f"  agents: {len(agentes['installed'])} installed, "
+                      f"{len(agentes['kept_yours'])} kept yours")
     painel = r["dashboard"]
     console.print(f"  dashboard: {painel['status']}"
                   + (f" ({painel['method']})" if painel.get("method") else ""))
@@ -434,6 +438,45 @@ def cmd_clients(args):
     return 0
 
 
+def _index_row_counts(cfg, timeout: float = 10.0) -> tuple[dict[str, int], str]:
+    """Rows per collection, and where the answer came from.
+
+    With the daemon up it is asked, not bypassed. Opening a PersistentClient
+    changes chroma.sqlite3's mtime even to only count (measured on chromadb
+    1.5.9: open, count and close each bump it), and the daemon reads any change
+    to that file as another process's write and reopens its index. Before the
+    reopen closed its old client, each `status` left 27 chromadb threads behind
+    in the daemon.
+
+    The daemon only knows its own collection, so that is the one counted then.
+
+    Returns ``(counts, source)`` with source "daemon", "local", or
+    "daemon-unresponsive: <reason>". A daemon that accepts connections and does
+    not answer is exactly the 2026-09-26 failure, so it is reported rather than
+    worked around by opening the index here.
+    """
+    from . import daemon
+    if daemon.is_listening(cfg):
+        try:
+            stats = daemon.call_tool(cfg, "vault_stats", timeout=timeout)
+        except daemon.DaemonUnavailable:
+            pass   # went away between the probe and the call: count locally
+        except Exception as e:
+            return {}, f"daemon-unresponsive: {type(e).__name__}: {e}"
+        else:
+            rows = stats.get("indexed_rows")
+            return ({cfg.collection_name: rows} if isinstance(rows, int) else {}), "daemon"
+
+    import chromadb
+    client = chromadb.PersistentClient(path=str(cfg.chroma_path))
+    try:
+        return {c.name: c.count() for c in client.list_collections()}, "local"
+    finally:
+        close = getattr(client, "close", None)
+        if close:
+            close()
+
+
 def cmd_status(_args):
     from rich.console import Console
     from rich.table import Table
@@ -498,20 +541,27 @@ def cmd_status(_args):
         pass
 
     try:
-        import chromadb
-        client = chromadb.PersistentClient(path=str(cfg.chroma_path))
-        # cfg.collection_name, not the historical literal: every other caller
-        # derives the name from the embedding model, so on any install using
-        # something other than bge-base this looked up a collection that does
-        # not exist and reported "not initialized: run: delegation-core
-        # reindex" over a perfectly healthy index: recommending a rebuild that
-        # costs hours on a real vault.
-        col = client.get_collection(cfg.collection_name)
+        counts, source = _index_row_counts(cfg)
+    except Exception:
+        counts, source = {}, "local"
+    # cfg.collection_name, not the historical literal: every other caller
+    # derives the name from the embedding model, so on any install using
+    # something other than bge-base this looked up a collection that does
+    # not exist and reported "not initialized: run: delegation-core
+    # reindex" over a perfectly healthy index: recommending a rebuild that
+    # costs hours on a real vault.
+    rows = counts.get(cfg.collection_name)
+    if source.startswith("daemon-unresponsive"):
+        table.add_row("ChromaDB", f"[red]✗[/red]  daemon on {cfg.server_host}:{cfg.server_port} "
+                                  f"accepts connections but does not answer "
+                                  f"({source.split(': ', 1)[1]}). Restart it.")
+    elif rows:
         # "rows", not "notes": since v0.12 a note is one row per chunk, so this
         # number runs well ahead of the note count and calling it notes invites
         # exactly the wrong conclusion about the size of the vault.
-        table.add_row("ChromaDB", f"[green]✓[/green]  {col.count()} rows indexed")
-    except Exception:
+        via = "  [dim](via daemon)[/dim]" if source == "daemon" else ""
+        table.add_row("ChromaDB", f"[green]✓[/green]  {rows} rows indexed{via}")
+    else:
         table.add_row("ChromaDB", "[dim]not initialized: run: delegation-core reindex[/dim]")
 
     # v0.2 feature flags
@@ -1195,24 +1245,26 @@ def cmd_embed_model(args):
         sys.exit(1)
 
     if not args.model:
-        import chromadb
-        counts = {}
         try:
-            client = chromadb.PersistentClient(path=str(cfg.chroma_path))
-            counts = {c.name: c.count() for c in client.list_collections()}
+            counts, source = _index_row_counts(cfg)
         except Exception:
-            pass
+            counts, source = {}, "local"
 
         table = Table(title="Modelos de embedding calibrados")
         for col in ("", "modelo", "dim", "ctx", "limiar", "idiomas", "indexado"):
             table.add_column(col)
         for name, p in MODEL_PROFILES.items():
             n = counts.get(p["collection"])
+            if n:
+                indexed = f"{n} linhas"
+            elif source != "local":
+                indexed = "[dim]? (com o daemon no ar só a coleção ativa é contada)[/dim]"
+            else:
+                indexed = "[dim]não indexado[/dim]"
             table.add_row(
                 "→" if name == cfg.bge_model else "",
                 name, str(p["dim"]), str(p["max_seq"]), str(p["search_threshold"]),
-                p["languages"],
-                f"{n} linhas" if n else "[dim]não indexado[/dim]",
+                p["languages"], indexed,
             )
         console.print(table)
         for name, p in MODEL_PROFILES.items():
@@ -1235,13 +1287,20 @@ def cmd_embed_model(args):
     console.print(f"  coleção: {collection}  ·  search_threshold: "
                   f"{previous_threshold} → {cfg.search_threshold}")
 
-    import chromadb
+    # The target collection is not the daemon's, so with the daemon up it cannot
+    # be counted without opening the index here, which is what this avoids.
+    from . import daemon
     existing = 0
-    try:
-        client = chromadb.PersistentClient(path=str(cfg.chroma_path))
-        existing = client.get_collection(collection).count()
-    except Exception:
-        pass
+    if daemon.is_listening(cfg):
+        if not args.reindex:
+            console.print("  [dim]Daemon no ar: a coleção nova não foi contada. Se estiver "
+                          f"vazia, rode: delegation-core embed-model {target} --reindex[/dim]")
+    else:
+        try:
+            counts, _ = _index_row_counts(cfg)
+            existing = counts.get(collection, 0)
+        except Exception:
+            pass
 
     if existing and not args.reindex:
         console.print(f"  [green]{existing} linhas já indexadas nessa coleção: pronto para usar.[/green]")
@@ -1367,6 +1426,114 @@ def cmd_doctor(args):
     # Non-zero exit on error only: warnings are informational, and a CI/cron
     # caller should not fail a run over a stale registry entry.
     sys.exit(1 if result["status"] == "error" else 0)
+
+
+def cmd_recover_index(args):
+    """Poe o indice de lado e deixa o daemon reconstrui-lo na proxima partida.
+
+    O mesmo caminho que o daemon toma sozinho quando o indice o derruba na
+    abertura, para quem nao quer esperar por isso. Nao abre o indice: renomear
+    o diretorio e zerar os carimbos nao exige ChromaDB, e abrir um indice
+    danificado e justamente o que mata o processo. A reconstrucao fica com o
+    daemon, que e o unico escritor.
+    """
+    from pathlib import Path
+    from rich.console import Console
+    from . import recuperacao
+    from .daemon import is_listening
+
+    console = Console()
+    cfg = _graph_config()
+    if cfg is None:
+        console.print("[yellow]Not configured.[/yellow] Run: delegation-core setup")
+        sys.exit(1)
+    if is_listening(cfg):
+        console.print("[red]✗[/red] The daemon is running and holds the index open. "
+                      "Stop it first: [bold]delegation-core service stop[/bold]")
+        sys.exit(1)
+
+    novo = str(Path(args.index_path).expanduser().resolve()) if args.index_path else None
+    if not args.yes:
+        console.print(f"Index at [bold]{cfg.chroma_path}[/bold] will be moved aside "
+                      "(renamed, not deleted), and the daemon will rebuild it from the "
+                      "vault and every ingest source on its next start.")
+        if novo:
+            console.print(f"The new index will live at [bold]{novo}[/bold].")
+        if input("Proceed? [y/N] ").strip().lower() not in ("y", "yes", "s", "sim"):
+            console.print("Nothing changed.")
+            return
+
+    pedido = recuperacao.pos_em_quarentena(
+        cfg, motivo="recover-index pedido a mao", novo_caminho=novo)
+
+    if pedido.get("quarentena"):
+        console.print(f"[green]✓[/green] Old index moved to {pedido['quarentena']}")
+    else:
+        console.print("[dim]No index on disk; nothing to move.[/dim]")
+    console.print(f"[green]✓[/green] Rebuild queued: the vault notes and "
+                  f"{len(pedido['fontes'])} ingest source(s). New index: {pedido['indice_novo']}")
+    console.print("Start the daemon ([bold]delegation-core service start[/bold]); it "
+                  "rebuilds in the background and heartbeat() shows the progress.")
+
+
+def cmd_ingest_registry(args):
+    """Remonta `ingested_sources.json` a partir das linhas do indice.
+
+    Sem --from, le o indice em uso e carimba os arquivos que nao mudaram desde
+    a ingestao, entao o proximo `ingest` so reembute o que mudou. Com --from
+    apontando para um indice em quarentena e --queue, poe as fontes dele na
+    fila de reconstrucao do daemon, sem refazer as notas: e o conserto de uma
+    reconstrucao que rodou com o registro errado.
+    """
+    from datetime import datetime
+    from pathlib import Path
+    from rich.console import Console
+    from . import ingest, recuperacao
+    from .daemon import is_listening
+
+    console = Console()
+    cfg = _graph_config()
+    if cfg is None:
+        console.print("[yellow]Not configured.[/yellow] Run: delegation-core setup")
+        sys.exit(1)
+
+    origem = Path(args.from_index).expanduser() if args.from_index else cfg.chroma_path
+    em_uso = origem.resolve() == Path(cfg.chroma_path).resolve()
+    if args.queue:
+        if em_uso:
+            console.print("[red]✗[/red] --queue is for an index that is no longer in use "
+                          "(e.g. the .chroma_bge-danificado-* directory); pass it with --from")
+            sys.exit(1)
+        if is_listening(cfg):
+            console.print("[red]✗[/red] The daemon is running; a rebuild it is doing would "
+                          "overwrite the queue. Stop it first: delegation-core service stop")
+            sys.exit(1)
+
+    registro = ingest.reconstruir_registro_do_indice(origem, carimbar_arquivos=em_uso)
+    if not em_uso:
+        # As linhas desse indice nao estao no indice novo: carimbo nenhum vale.
+        for entrada in registro.values():
+            if isinstance(entrada, dict):
+                entrada["files"] = {}
+    ingest._save_registry(registro)
+    console.print(f"[green]✓[/green] Registry rebuilt from {origem}: {len(registro)} source(s)")
+
+    if args.queue:
+        fontes = [{"path": f, "recursive": bool((e or {}).get("recursive", True)),
+                   "exclude": (e or {}).get("exclude") or []}
+                  for f, e in registro.items()]
+        pedido = recuperacao.reconstrucao_pendente() or {
+            "motivo": f"fontes do indice {origem} postas na fila a mao",
+            "pedido_em": datetime.now().isoformat(timespec="seconds"),
+            "quarentena": str(origem), "indice_novo": str(cfg.chroma_path),
+            "relocado_para_fora_da_nuvem": False, "notas_feitas": True,
+            "fontes": [], "fontes_feitas": []}
+        conhecidas = {f["path"] for f in pedido.get("fontes") or []}
+        pedido["fontes"] = (pedido.get("fontes") or []) + [
+            f for f in fontes if f["path"] not in conhecidas]
+        recuperacao._gravar_json(recuperacao.caminho_do_pedido(), pedido)
+        console.print(f"[green]✓[/green] {len(pedido['fontes'])} source(s) queued. Start the "
+                      "daemon; it re-ingests them and heartbeat() shows the progress.")
 
 
 def cmd_graph_list(_args):
@@ -1603,6 +1770,21 @@ def main():
                           help="Remove orphan ChromaDB segment directories on disk")
     p_doctor.add_argument("--rebuild-fts", action="store_true",
                           help="Rebuild SQLite full-text search index if corrupted")
+    p_recover = sub.add_parser(
+        "recover-index",
+        help="Move a damaged index aside; the daemon rebuilds it on its next start")
+    p_recover.add_argument("--index-path", default="",
+                           help="Rebuild the index at this path instead (e.g. out of a "
+                                "cloud-synced vault); saved as index_path in config.json")
+    p_recover.add_argument("--yes", action="store_true", help="Do not ask for confirmation")
+    p_registry = sub.add_parser(
+        "ingest-registry",
+        help="Rebuild ingested_sources.json from the rows of an index")
+    p_registry.add_argument("--from", dest="from_index", default="",
+                            help="Index directory to read (default: the index in use)")
+    p_registry.add_argument("--queue", action="store_true",
+                            help="Queue the sources for re-ingestion by the daemon "
+                                 "(only with --from pointing to an index no longer in use)")
     p_reindex = sub.add_parser("reindex", help="Rebuild ChromaDB search index from vault folders")
     p_reindex.add_argument("--force", action="store_true",
                            help="Reindex every note, not just those changed since last run "
@@ -1766,6 +1948,8 @@ def main():
         "clients":  cmd_clients,
         "status":   cmd_status,
         "doctor":   cmd_doctor,
+        "recover-index": cmd_recover_index,
+        "ingest-registry": cmd_ingest_registry,
         "reindex":  cmd_reindex,
         "maintain": cmd_maintain,
         "dashboard-api": cmd_dashboard_api,

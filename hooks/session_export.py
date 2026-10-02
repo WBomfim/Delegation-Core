@@ -253,7 +253,9 @@ def _format_markdown(
 
     lines = [
         "---",
-        f"title: {_yaml_quote_scalar(f'Raw transcript — {topic}')}",
+        # Hyphen and not an em dash: the vault's writing rule forbids it, and
+        # every transcript this hook writes lands in the vault.
+        f"title: {_yaml_quote_scalar(f'Raw transcript - {topic}')}",
         f"date: {date_str}",
         f"exported_at: {datetime.now().isoformat(timespec='seconds')}",
         f"session_id: {session_id}",

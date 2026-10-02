@@ -15,14 +15,14 @@ Claude Code (~/.claude.json, JSON):
 
     "delegation-core": {
       "type": "http",
-      "url": "http://127.0.0.1:8787/mcp",
+      "url": "http://127.0.0.1:8797/mcp",
       "headers": {"Authorization": "Bearer <token>"}
     }
 
 Codex (~/.codex/config.toml, TOML):
 
     [mcp_servers.delegation-core]
-    url = "http://127.0.0.1:8787/mcp"
+    url = "http://127.0.0.1:8797/mcp"
     bearer_token_env_var = "DELEGATION_CORE_TOKEN"
 
 Codex reads the secret from an environment variable rather than the config file,
@@ -32,7 +32,7 @@ is Codex's design, not a choice made here.
 Antigravity / Gemini CLI (~/.gemini/config/mcp_config.json, JSON):
 
     "delegation-core": {
-      "serverUrl": "http://127.0.0.1:8787/mcp",
+      "serverUrl": "http://127.0.0.1:8797/mcp",
       "headers": {"Authorization": "Bearer <token>"}
     }
 

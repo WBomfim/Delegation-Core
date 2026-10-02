@@ -25,6 +25,7 @@ import logging
 import subprocess
 import threading
 import weakref
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -208,4 +209,13 @@ def take(who: str) -> int:
             logger.info("GPU handed to %s, %d MiB reclaimed", who, freed)
         return freed
 
+
+@contextmanager
+def held_by(who: str):
+    """`take` as a context manager, for call sites that read better that way.
+
+    Exiting the block does not give the card back, for the reason in `take`.
+    """
+    take(who)
+    yield
 

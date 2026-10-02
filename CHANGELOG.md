@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Delegation Core project (v0.1.0 to v0.13.0 / v13) are documented in this file.
+All notable changes to the Delegation-Core Office project (v0.1.0 to v0.13.0 / v13) are documented in this file.
 This changelog is derived directly from the canonical versioning recorded across the codebase and vault archives.
 
 ---
@@ -29,6 +29,28 @@ This changelog is derived directly from the canonical versioning recorded across
 ### Changed
 
 - **Repository hygiene**: Organized `.gitignore` rules into documented blocks.
+
+---
+
+## Unreleased (2026-10-01) - Default MCP port
+
+### Changed
+- The default MCP port is now `8797` instead of `8787`, avoiding a collision with Headroom's commonly used proxy port. Explicit `server_port` values in existing configurations are preserved. Client configuration examples use the new default.
+
+## Unreleased (2026-09-29) - Daemon travado no Mac: reabertura do indice, loop bloqueado e watchdog
+
+### Fixed
+- **Reabertura do indice vazava o motor do chromadb.** `clear_system_cache()` so esquecia o System antigo, sem parar; medido no chromadb 1.5.9, cada reabertura deixava 27 threads rodando (234 de 285 no daemon do Mac em 26/09). A reabertura agora chama `Client.close()` (`index_lock.close_chroma_client`).
+- **Reabertura sob consulta em andamento.** Toda chamada que usa `collection` segura uma trava compartilhada; a reabertura espera com a trava exclusiva. Pedida de dentro de uma consulta, ela e adiada para a chamada seguinte, em vez de travar em si mesma.
+- **Ferramentas bloqueantes no event loop.** 17 ferramentas sem `await` viraram `def`, que o fastmcp roda no threadpool; `search_vault` e `heartbeat` levam o trabalho do indice para `asyncio.to_thread`. As que escrevem continuam serializadas entre si.
+- **`status` e `embed-model` abriam o indice ao lado do daemon.** Abrir um PersistentClient, mesmo so para contar, muda o mtime do `chroma.sqlite3`, e o daemon le isso como escrita de outro processo e reabre. Com o daemon no ar eles perguntam a ele; um daemon que aceita conexao e nao responde e reportado em vez de contornado.
+
+### Added
+- **Watchdog do event loop** (`loop_watchdog_sec`, padrao 300, 0 desliga). Um timer do faulthandler, que roda sem o GIL, e rearmado pelo loop; se o loop parar, grava a pilha de todas as threads em `~/.delegation_core/watchdog_tracebacks.log` e sai com codigo 1, que launchd e systemd reiniciam.
+
+### Not in this change
+- O indice ja danificado no Mac (SIGSEGV em `chromadb_rust_bindings` desde 29/09 07:43) precisa de recuperacao propria; esta mudanca previne, nao repara.
+- Troca do modelo padrao para bge-m3 e a lista de pastas do AGENT_GUIDE no Mac: ajustes de configuracao por maquina.
 
 ---
 

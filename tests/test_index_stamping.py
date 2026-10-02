@@ -96,22 +96,37 @@ def test_lote_faz_uma_unica_escrita(vault, monkeypatch):
     """
     rels = [_escreve(vault, f"Reference/n{i}.md") for i in range(50)]
     escritas = {"n": 0}
-    real = vault._save_index_state
 
-    def contando(estado):
+    # Espiona `notes.gravar_estado`, que passou a ser o escritor quando a posse
+    # do arquivo de estado saiu do `vault.py` para o ciclo travado. Espionar o
+    # metodo antigo deixava este teste contar ZERO escritas e ficar verde por
+    # nao olhar mais nada.
+    from delegation_core import notes as notes_mod
+    real = notes_mod.gravar_estado
+
+    def contando(caminho, estado):
         escritas["n"] += 1
-        real(estado)
+        real(caminho, estado)
 
-    monkeypatch.setattr(vault, "_save_index_state", contando)
+    monkeypatch.setattr(notes_mod, "gravar_estado", contando)
     assert vault.stamp_indexed(rels) == 50
     assert escritas["n"] == 1, f"{escritas['n']} escritas para um lote de 50"
 
 
 def test_lista_vazia_nao_escreve_nada(vault, monkeypatch):
-    def explode(_):
+    """Tambem reapontado: espionar o metodo antigo tornaria este teste vacuo.
+
+    `stamp_indexed` nem chega ao escritor com lista vazia, entao um espiao no
+    lugar errado nunca dispararia e o teste passaria sem olhar nada. Com o
+    espiao no escritor de verdade ele volta a afirmar alguma coisa, e pega de
+    quebra a trava sendo tomada a toa para um lote vazio.
+    """
+    from delegation_core import notes as notes_mod
+
+    def explode(caminho, estado):
         raise AssertionError("escreveu o estado para um lote vazio")
 
-    monkeypatch.setattr(vault, "_save_index_state", explode)
+    monkeypatch.setattr(notes_mod, "gravar_estado", explode)
     assert vault.stamp_indexed([]) == 0
 
 

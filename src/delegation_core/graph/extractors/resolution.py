@@ -45,6 +45,14 @@ _ROOT_PROFUNDIDADE = 0
 _ROOT_TRAVA = threading.Lock()
 
 
+#: O que `Path.resolve()` levanta quando nao consegue decidir. RuntimeError
+#: entra por causa do Python 3.12: num laco de symlink ele levanta
+#: RuntimeError("Symlink loop"), e so a partir do 3.13 passou a levantar
+#: OSError. Medido num Mac com 3.12 em 29/09/2026: a guarda de contencao, que
+#: promete negar sem levantar, levantava. Aqui a suite roda em 3.14 e nao via.
+_FALHAS_DE_RESOLVE = (OSError, RuntimeError, ValueError)
+
+
 @contextlib.contextmanager
 def escopo_de_root(root: "Path | None"):
     """Marca a raiz do scan enquanto o bloco roda."""
@@ -53,7 +61,7 @@ def escopo_de_root(root: "Path | None"):
     if root is not None:
         try:
             resolvido = Path(root).resolve()
-        except (OSError, ValueError):
+        except _FALHAS_DE_RESOLVE:
             resolvido = None
     with _ROOT_TRAVA:
         anterior, conflito_anterior = _ROOT_DO_SCAN, _ROOT_CONFLITO
@@ -111,7 +119,7 @@ def _dentro_do_root(caminho: Path, root: "Path | None") -> bool:
         return True
     try:
         return caminho.resolve().is_relative_to(Path(root).resolve())
-    except (OSError, ValueError):
+    except _FALHAS_DE_RESOLVE:
         return False
 
 
@@ -559,7 +567,7 @@ def _contained_in_package(resolved: Path, package_dir: Path) -> bool:
     within package_dir after resolution."""
     try:
         return resolved.resolve().is_relative_to(package_dir.resolve())
-    except ValueError:
+    except _FALHAS_DE_RESOLVE:
         return False
 
 def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:

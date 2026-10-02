@@ -186,8 +186,82 @@ def next_check_seconds(hint: dict, elapsed: float) -> int:
     return min(max(int(elapsed / 2), _MIN_POLL_WAIT), _MAX_POLL_WAIT)
 
 
+#: Tarefas das quais NAO pode haver duas rodando ao mesmo tempo, com o motivo.
+#:
+#: Todas escrevem o indice do vault inteiro, e nenhuma e particionada por
+#: argumento: duas rodando juntas fazem o mesmo trabalho duas vezes sobre o
+#: mesmo dado. A concorrencia nao e hipotetica, vem dos hooks de sessao (o de
+#: fim dispara `reindex`, o de inicio dispara `maintain`), e ate 26/09/2026
+#: `submit` abria uma thread nova sem olhar se ja havia uma igual.
+#:
+#: A regra sobre ingestao existia como instrucao humana, "nunca rode duas
+#: ingestoes ao mesmo tempo", adotada em 31/08 depois que duas corridas
+#: apagaram as entradas de Soteria e Pessoal do registro. Instrucao que depende
+#: de alguem lembrar nao e defesa, como o `conftest.py` desta suite ja provou.
+TAREFAS_EXCLUSIVAS = frozenset({
+    "vault_reindex",       # reescreve o estado do indice do vault todo
+    "run_maintenance",     # classifica, funde e religa o inbox inteiro
+    "ingest_folder",       # o defeito de 31/08, mecanizado em vez de instruido
+    "ingest_configured",   # todas as fontes declaradas de uma vez (PR#2)
+})
+#: `ingest_configured` entrou com o PR#2 do William (29/09/2026). Ate la ficava
+#: fora de proposito, porque exclusividade para tarefa que ninguem submete e
+#: protecao dada a ninguem, e o teste que confere os nomes contra o server.py
+#: derrubaria a entrada. Sem argumento ela ingere TODAS as fontes, entao duas
+#: juntas sao o mesmo trabalho duas vezes sobre o mesmo registro.
+#: A reconstrucao do indice (recuperacao.py) roda como `vault_reindex:reconstrucao`,
+#: na familia do reindex, e por isso nao precisa de nome proprio aqui.
+
+#: FORA da lista, de proposito, porque sao particionadas por argumento e duas
+#: pedidos diferentes sao trabalho diferente e legitimo:
+#:
+#: - `graph_build`: um grafo por repositorio, e o rebuild ja tem lock proprio
+#:   em `graph_hook_rebuild`, por diretorio de grafo.
+#: - `relink_folder`: uma pasta por chamada.
+#:
+#: Para essas, a protecao do dado compartilhado e a trava do estado do indice
+#: em `notes.atualizar_estado`, e nao a exclusao mutua da tarefa.
+
+
+def _familia(task_name: str) -> str:
+    """`vault_reindex: incremental` e `vault_reindex:full` sao a mesma tarefa.
+
+    O nome carrega o modo depois do dois-pontos, e os dois modos escrevem o
+    mesmo arquivo. Comparar o nome inteiro deixaria um incremental e um full
+    correrem juntos, que e justamente o par pior.
+    """
+    return task_name.split(":", 1)[0].strip()
+
+
+def em_andamento(task_name: str) -> str | None:
+    """job_id de um job da mesma familia ainda rodando, ou None."""
+    familia = _familia(task_name)
+    with _lock:
+        for jid, j in _jobs.items():
+            if j["status"] == "running" and _familia(j["task"]) == familia:
+                return jid
+    return None
+
+
 def submit(task_name: str, fn, *args, **kwargs) -> str:
-    """Run fn(*args, **kwargs) in a daemon thread. Returns a job_id immediately."""
+    """Run fn(*args, **kwargs) in a daemon thread. Returns a job_id immediately.
+
+    Para uma tarefa de `TAREFAS_EXCLUSIVAS` que ja esteja rodando, devolve o
+    job_id DAQUELA em vez de abrir uma segunda. Quem pediu continua com um id
+    para consultar, e recebe o resultado do trabalho que ja estava em curso, que
+    e o que um hook disparado duas vezes precisa. O job consultado diz quantos
+    pedidos foram absorvidos, para que isso nao seja invisivel.
+    """
+    if _familia(task_name) in TAREFAS_EXCLUSIVAS:
+        existente = em_andamento(task_name)
+        if existente:
+            with _lock:
+                j = _jobs[existente]
+                j["pedidos_coalescidos"] = j.get("pedidos_coalescidos", 0) + 1
+            logger.info("Job %s (%s) ja esta rodando; pedido de %s absorvido",
+                        existente, _jobs[existente]["task"], task_name)
+            return existente
+
     job_id = uuid.uuid4().hex[:8]
     with _lock:
         _jobs[job_id] = {

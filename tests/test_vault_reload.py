@@ -99,7 +99,7 @@ def test_the_embedding_function_survives_a_reopen(tmp_path, monkeypatch):
     write must not pay that, and on a full GPU the rebuild can fail outright."""
     built = []
 
-    def fake_builder(model, max_seq_length=None, batch_size=None):
+    def fake_builder(model, max_seq_length=None, batch_size=None, device=None):
         # v0.12 added the two execution caps to the factory's signature. A double
         # that predates them makes _init raise, so the collection never opens and
         # this test reads "never built" as "not rebuilt" — passing vacuously.
@@ -140,7 +140,7 @@ def test_the_configured_execution_caps_reach_the_embedding_function(tmp_path, mo
     the values this Config carries, not against the shipped defaults."""
     built = []
 
-    def fake_builder(model, max_seq_length=None, batch_size=None):
+    def fake_builder(model, max_seq_length=None, batch_size=None, device=None):
         built.append({"model": model, "max_seq_length": max_seq_length,
                       "batch_size": batch_size})
         return object()

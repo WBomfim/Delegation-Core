@@ -375,8 +375,48 @@ def _limited_embedding_function_class(base: type) -> type:
     return LimitedSentenceTransformerEmbeddingFunction
 
 
+#: Valores aceitos em `embed_device`. "auto" e o comportamento historico:
+#: usar o acelerador que existir.
+DISPOSITIVOS = ("auto", "cpu", "cuda", "mps")
+
+
+def resolver_dispositivo(preferencia: str | None = "auto") -> str:
+    """Traduz a preferencia de config no dispositivo a usar.
+
+    `detect_device()` responde o que EXISTE na maquina. Esta funcao responde o
+    que se QUER usar, que e outra pergunta, e a separacao importa: pedir CPU
+    numa maquina com CUDA e uma escolha legitima, nao um engano a ser corrigido.
+
+    ## Por que isto existe
+
+    Nesta maquina o BGE-m3 e o llama-server nao cabem juntos nos 16 GB da
+    placa: o BGE segurava 3364 MiB e o segundo a carregar morria em
+    `cudaMalloc`. A solucao em uso desde 09/09/2026 e um drop-in de systemd com
+    `CUDA_VISIBLE_DEVICES=`, e o comentario dele explica por que foi preciso
+    chegar a esse ponto: *"detect_device() escolhe cuda sempre que
+    torch.cuda.is_available(), e nao le nenhuma variavel propria, entao esconder
+    a placa e o unico jeito sem tocar no codigo"*.
+
+    Esconder a placa do processo inteiro e um instrumento grosso: apaga a GPU
+    para tudo que rodar ali, nao so para o encoder. Um campo de config faz a
+    mesma coisa com a pontaria certa.
+
+    Preferencia desconhecida cai em "auto" com aviso, em vez de levantar: um
+    erro de digitacao no config nao pode deixar a busca sem embedder.
+    """
+    escolha = (preferencia or "auto").strip().lower()
+    if escolha not in DISPOSITIVOS:
+        logger.warning("embed_device=%r nao e um valor conhecido %s; usando auto",
+                       preferencia, list(DISPOSITIVOS))
+        escolha = "auto"
+    if escolha == "auto":
+        return detect_device()
+    return escolha
+
+
 def make_bge_embedding_function(model_name: str, max_seq_length: int | None = None,
-                                batch_size: int | None = None):
+                                batch_size: int | None = None,
+                                device: str | None = "auto"):
     """Build a chromadb-compatible BGE embedding function.
 
     Uses SentenceTransformerEmbeddingFunction with normalize_embeddings=True,
@@ -414,7 +454,7 @@ def make_bge_embedding_function(model_name: str, max_seq_length: int | None = No
             batch_size=batch_size,
         )
 
-    device = detect_device()
+    device = resolver_dispositivo(device)
     if device == "mps":
         # Apple Silicon MPS safety guard (DC-47): cap sequence length to 1024 and batch to 16
         # when not explicitly configured, preventing buffer allocation faults in unified memory.
@@ -437,6 +477,10 @@ def make_bge_embedding_function(model_name: str, max_seq_length: int | None = No
         # back to CPU once rather than leaving search permanently broken.
         if device == "cpu":
             raise
+        # Vale tambem para quem PEDIU um dispositivo que a maquina nao tem: o
+        # config e do usuario e pode viajar entre maquinas, entao um
+        # `embed_device: cuda` num laptop sem placa cai para cpu com aviso em
+        # vez de deixar a busca sem embedder.
         logger.warning("BGE load failed on %s (%s): falling back to cpu", device, e)
         return build("cpu")
 

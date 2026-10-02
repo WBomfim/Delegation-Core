@@ -78,12 +78,19 @@ configured ingestion commands.
 
 ## Using it as an MCP server
 
-delegation-core runs as a single HTTP daemon on `127.0.0.1:8787`, and every MCP client
+delegation-core runs as a single HTTP daemon on `127.0.0.1:8797`, and every MCP client
 connects to that one process. Point your clients at it with:
 
 ```bash
 delegation-core clients          # writes the http entry + bearer token into known clients
 ```
+
+The default MCP port is `8797` to avoid a collision with Headroom's commonly used
+`8787` proxy port. Existing installations keep the `server_port` saved in
+`~/.delegation_core/config.json`. To migrate one, change that setting, restart the
+daemon, and refresh the affected clients with `delegation-core clients` (follow
+its instructions for an existing Codex entry). The dashboard API port is a
+separate setting.
 
 This is a one-time migration for anyone upgrading from v0.10 or earlier, which spoke stdio:
 a leftover `{"command": ..., "args": ["run"]}` entry spawns a second server that fights the

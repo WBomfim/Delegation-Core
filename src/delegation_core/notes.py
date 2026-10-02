@@ -21,11 +21,18 @@ daqui, e o ganho seria zero.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
+import threading
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from . import locking
 from .linker import frontmatter_aliases
+
+logger = logging.getLogger("notes")
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
@@ -504,3 +511,155 @@ def _merge_alias(frontmatter: str, alias: str) -> str:
         linhas.insert(j, f"  - {yaml_quote_scalar(cru)}")
         return "\n".join(linhas)
     return frontmatter
+
+
+def _load_registry_for_links() -> dict:
+    """O registro de ingestao, isolado numa funcao para ser substituivel.
+
+    O import e tardio de proposito: `ingest.py` importa `client_from_path` de
+    `vault.py`, que importa deste modulo, entao um import no topo daqui fecha
+    o ciclo e quebra a carga do pacote inteiro. Tardio, o ciclo nunca existe.
+
+    Funcao separada, e nao um import embutido em `ingested_link_stems`, porque
+    um teste precisa trocar o registro sem tocar em disco nem no subsistema de
+    ingestao. Sem esta costura, testar a classificacao dos links exigiria
+    escrever um registro real no HOME de quem roda a suite.
+    """
+    from .ingest import _load_registry
+    return _load_registry()
+
+
+def ingested_link_stems() -> set[str]:
+    """Nomes pelos quais um arquivo ingerido de fora do vault pode ser linkado.
+
+    Le o registro de ingestao em vez de varrer disco: o registro ja guarda o
+    caminho de cada arquivo indexado, entao a resposta sai sem tocar em 1.700
+    arquivos espalhados por 23 fontes.
+
+    O registro reflete a ULTIMA ingestao, nao o disco de agora, e isso e o
+    comportamento correto: se um arquivo ainda nao foi ingerido, o
+    `search_vault(scope='external')` tambem nao o encontra, entao o link
+    realmente aponta para algo que o servidor nao serve. A checagem se cura
+    sozinha quando a pasta e reingerida.
+
+    Falha calada por escolha. Esta funcao serve a uma checagem de saude, e uma
+    checagem que estoura porque o registro de OUTRO subsistema esta corrompido
+    troca um numero levemente pessimista por nenhum numero. Sem registro, cada
+    link para fonte ingerida volta a contar como quebrado, que e exatamente o
+    comportamento anterior a esta funcao.
+    """
+    try:
+        registro = _load_registry_for_links()
+    except Exception:
+        return set()
+
+    nomes: set[str] = set()
+    for entrada in registro.values():
+        if not isinstance(entrada, dict):
+            continue
+        for caminho in (entrada.get("files") or {}):
+            stem = Path(caminho).stem
+            if stem:
+                nomes.update(link_names_for_stem(stem))
+    return nomes
+
+
+# ── estado do indice (.chroma_index.json) ────────────────────────────────────
+#
+# Este arquivo diz quais notas ja estao embutidas e com que mtime, e e o que o
+# reindex incremental consulta para pular o que nao mudou. Ele morava inteiro
+# no `vault.py` com escrita atomica e SEM trava, e as duas coisas tem nomes
+# parecidos e resolvem problemas diferentes: atomica garante que ninguem le
+# pela metade, trava garante que quem leu antes de voce ainda esteja no que
+# voce grava.
+#
+# O defeito medido em 26/09/2026: os tres escritores (`stamp_indexed`,
+# `delete_notes` e o fim do `reindex_vault`) fazem ler-modificar-escrever, e os
+# hooks de sessao criam concorrencia de verdade entre eles. O de fim de sessao
+# dispara `delegation-core reindex`, o de inicio dispara `delegation-core
+# maintain`, e `jobs.submit` abre uma thread nova sem checar se ja existe um
+# job igual rodando. Duas sessoes fechando juntas, ou uma fechando enquanto
+# outra abre, colocam dois escritores no mesmo arquivo.
+#
+# Consequencia, na propria letra do docstring que ja estava la: o ultimo a
+# gravar escreve por cima e os carimbos do outro somem, e o proximo reindex
+# reembute nota intocada. E o nome do temporario era fixo, entao dois
+# escritores abriam o MESMO `.json.tmp`: um truncava o do outro no meio do
+# dump e o `os.replace` instalava o resultado, que `carregar` le como "nada
+# esta carimbado", ou seja um reembute do vault inteiro.
+#
+# E a mesma forma de defeito que o `locking.py` existe para conter, e que ja
+# tinha sido corrigida no `jobs.py` em 03/09 e no registro de ingestao em
+# 31/08. Aqui era o terceiro sitio.
+
+ESTADO_DO_INDICE = ".chroma_index.json"
+
+
+def caminho_do_estado(vault: Path) -> Path:
+    return Path(vault) / ESTADO_DO_INDICE
+
+
+def carregar_estado(caminho: Path) -> dict:
+    """Devolve {} para arquivo ausente ou ilegivel, avisando no segundo caso.
+
+    Responder {} e correto: toda nota parece sem carimbo e o proximo passe a
+    reembute, o que e lento e nao errado. O que nao pode e ser silencioso, que
+    era o comportamento antes, porque o SINTOMA e um reindex "incremental" que
+    roda por minutos sem nada dizendo por que.
+    """
+    caminho = Path(caminho)
+    if caminho.exists():
+        try:
+            return json.loads(caminho.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(
+                "estado do indice em %s ilegivel (%s): toda nota sera tratada "
+                "como sem carimbo e reembutida no proximo reindex", caminho, e)
+    return {}
+
+
+def gravar_estado(caminho: Path, estado: dict) -> None:
+    """Escrita atomica, com temporario UNICO por processo e thread.
+
+    O nome fixo `.json.tmp` era compartilhado: sob trava isso nao morde, mas o
+    temporario e a ultima linha de defesa de quem grave este arquivo por um
+    caminho que a trava nao cubra, e um nome unico custa uma linha.
+    """
+    caminho = Path(caminho)
+    tmp = caminho.with_suffix(f".json.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(estado, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, caminho)
+    except Exception as e:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        logger.warning("nao foi possivel gravar o estado do indice: %s", e)
+
+
+def atualizar_estado(caminho: Path, modificar) -> dict:
+    """Ler, modificar e gravar sob UMA trava, que e o ponto desta funcao.
+
+    `modificar` recebe o estado em disco e devolve o que vai ser gravado.
+
+    Quando a trava nao sai no tempo de espera, o ciclo roda sem ela e avisa: um
+    carimbo perdido custa reembutir a nota, e derrubar a escrita da nota (ou o
+    fim de uma sessao) por causa de um carimbo seria pior que o defeito.
+    """
+    caminho = Path(caminho)
+    try:
+        return locking.ler_modificar_escrever(
+            caminho,
+            ler=lambda: carregar_estado(caminho),
+            escrever=lambda novo: gravar_estado(caminho, novo),
+            modificar=modificar,
+        )
+    except locking.TravaIndisponivel as e:
+        logger.warning("%s: seguindo sem trava, um carimbo pode se perder", e)
+        novo = modificar(carregar_estado(caminho))
+        gravar_estado(caminho, novo)
+        return novo

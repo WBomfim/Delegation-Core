@@ -209,6 +209,54 @@ print(json.dumps({"broken": broken, "count": collection.count()}))
 """
 
 
+def sondar_indice(cfg, timeout: int = 120) -> dict:
+    """Roda a sonda num processo filho. {completed, sinal} ou {timeout: True}.
+
+    `sinal` e o numero do sinal que matou o filho, ou None. E a unica leitura
+    que `recuperacao` faz daqui: morte por sinal ao abrir e a condicao que ela
+    conserta, e nenhuma outra resposta desta sonda justifica uma quarentena.
+    """
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", _PROBE_SOURCE, str(cfg.chroma_path),
+             cfg.collection_name, json.dumps(list(_SCOPE_FILTERS))],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"timeout": True, "sinal": None}
+    sinal = -completed.returncode if completed.returncode < 0 else None
+    # No Windows nao ha sinal: a violacao de acesso sai como o codigo NTSTATUS
+    # 0xC0000005. Sem isto a recuperacao automatica nunca dispararia la.
+    if sinal is None and completed.returncode in _NTSTATUS_DE_CRASH:
+        sinal = 11
+    return {"completed": completed, "sinal": sinal}
+
+
+#: Codigos de saida do Windows para processo morto por violacao de acesso ou
+#: estouro de pilha, sem e com sinal (a mesma palavra lida como int32).
+_NTSTATUS_DE_CRASH = frozenset({0xC0000005, 0xC00000FD, -1073741819, -1073741571})
+
+
+def check_index_location(cfg) -> dict:
+    """O indice mora numa pasta que um cliente de nuvem sincroniza?
+
+    Um dos dois Macs com indice danificado em 29/09/2026 tinha o vault, e com ele
+    o `.chroma_bge`, dentro do OneDrive. Sincronizacao que copia, trava ou
+    substitui arquivos do SQLite e do HNSW por baixo de um processo que os tem
+    abertos e causa conhecida de dano, e nada avisava.
+    """
+    from .recuperacao import caminho_local_do_indice, em_pasta_sincronizada
+    if not em_pasta_sincronizada(cfg.chroma_path):
+        return {"check": "index_location", "status": "ok",
+                "detail": f"index at {cfg.chroma_path}, outside any synced folder"}
+    return {"check": "index_location", "status": "warn",
+            "detail": f"index at {cfg.chroma_path} is inside a cloud-synced folder; "
+                      "sync touching the database under an open process damages it",
+            "fix": "with the daemon stopped: delegation-core recover-index "
+                   f"--index-path {caminho_local_do_indice()} (the index is rebuilt "
+                   "there from the vault and the ingest sources)"}
+
+
 def check_index_integrity(cfg) -> dict:
     """Ask the index the question that breaks, rather than inspecting its files.
 
@@ -236,18 +284,14 @@ def check_index_integrity(cfg) -> dict:
     if not (cfg.chroma_path / "chroma.sqlite3").exists():
         return {"check": "index_integrity", "status": "ok", "detail": "no index built yet"}
 
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-c", _PROBE_SOURCE, str(cfg.chroma_path),
-             cfg.collection_name, json.dumps(list(_SCOPE_FILTERS))],
-            capture_output=True, text=True, timeout=120,
-        )
-    except subprocess.TimeoutExpired:
+    sonda = sondar_indice(cfg)
+    if sonda.get("timeout"):
         return {"check": "index_integrity", "status": "warn",
                 "detail": "index did not answer within 120s",
                 "fix": "delegation-core reindex --force"}
+    completed = sonda["completed"]
 
-    if completed.returncode < 0:
+    if sonda["sinal"] is not None:
         # What was measured on the one occurrence, and nothing beyond it: every
         # newly opened client died on this index while the running server kept
         # answering from memory, `reindex --force` died the same way without
@@ -257,12 +301,15 @@ def check_index_integrity(cfg) -> dict:
         # symptom and the exit, and claim no more than that.
         return {"check": "index_integrity", "status": "error",
                 "detail": f"opening the index crashed the probe (signal "
-                          f"{-completed.returncode}): every new process that opens it "
+                          f"{sonda['sinal']}): every new process that opens it "
                           "will crash the same way; a running server keeps working from "
                           "memory",
-                "fix": "do not restart the MCP server yet: back it up, then rebuild from "
-                       "a clean path and re-run the ingests in ingested_sources.json; "
-                       "reindex --force crashes on this state too"}
+                "fix": "a server already running keeps answering from memory, so do "
+                       "not restart it in a hurry; when ready, stop it and run "
+                       "delegation-core recover-index, which moves this index aside so "
+                       "the daemon rebuilds it on its next start (a daemon that crashes "
+                       "opening it does this by itself). reindex --force crashes on "
+                       "this state"}
     if completed.returncode != 0:
         tail = (completed.stderr or "").strip().splitlines()
         return {"check": "index_integrity", "status": "warn",
@@ -552,6 +599,7 @@ def run_all(cfg) -> dict:
         check_orphan_segments(cfg),
         check_fts_integrity(cfg),
         check_index_integrity(cfg),
+        check_index_location(cfg),
         check_local_fallback(cfg),
         check_index_writers(),
     ]

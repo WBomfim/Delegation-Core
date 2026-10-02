@@ -725,6 +725,7 @@ Avoid vague titles like "Meeting notes" or "Research". Use specific titles like
 | Error | Action |
 |-------|--------|
 | `heartbeat` returns `degraded` | Warn user: "The local AI engine is starting up — first tool call may take up to 90 seconds." Then retry. |
+| `heartbeat` carries `index_recovery` | The index crashed whoever opened it and was set aside (renamed, never deleted). The daemon is rebuilding it from the vault and every ingest source; search fills in as it goes. Tell the user, and do not run `reindex --force` or restore a backup over it. `delegation-core recover-index` does the same by hand, with the daemon stopped. |
 | `search_vault` returns no results | Proceed without vault context. Do not invent vault content. |
 | `write_note` returns invalid folder error | Call `heartbeat()` to get valid folder list, retry with correct folder. |
 | `compress` times out | The model is under load. Wait 30 seconds and retry once. |

@@ -36,6 +36,8 @@ def checkout(tmp_path):
     (raiz / "skills" / "uma-skill" / "SKILL.md").write_text("# skill")
     (raiz / "skills" / "outra-skill").mkdir(parents=True)
     (raiz / "skills" / "outra-skill" / "SKILL.md").write_text("# outra")
+    (raiz / "agents").mkdir(parents=True)
+    (raiz / "agents" / "um-agente.md").write_text("---\nname: um-agente\n---\n")
     for nome in installer.SHIPPED_DOCS:
         (raiz / nome).write_text(f"# {nome}")
     (raiz / "hooks" / "session_export.py").write_text("# hook")
@@ -203,6 +205,38 @@ def test_checkout_sem_pasta_de_skills_nao_e_erro(tmp_path, sem_maquina):
     r = installer.install_skills(vazio)
     assert r["available"] is False
     assert r["installed"] == []
+
+
+# ── agents ──────────────────────────────────────────────────────────────────
+
+def test_instala_os_agentes_empacotados(checkout, sem_maquina, tmp_path):
+    r = installer.install_agents(checkout)
+    assert r["installed"] == ["um-agente"]
+    assert (tmp_path / "casa" / ".claude" / "agents" / "um-agente.md").is_file()
+
+
+def test_nunca_sobrescreve_um_agente_que_o_usuario_ja_tem(checkout, sem_maquina, tmp_path):
+    # Um subagente que a pessoa afinou para o proprio fluxo nao pode ser
+    # trocado em silencio por um que veio no pacote.
+    meu = tmp_path / "casa" / ".claude" / "agents"
+    meu.mkdir(parents=True)
+    (meu / "um-agente.md").write_text("a minha versao")
+
+    r = installer.install_agents(checkout)
+    assert r["kept_yours"] == ["um-agente"]
+    assert (meu / "um-agente.md").read_text() == "a minha versao"
+
+
+def test_checkout_sem_pasta_de_agentes_nao_e_erro(tmp_path, sem_maquina):
+    vazio = tmp_path / "vazio"
+    vazio.mkdir()
+    r = installer.install_agents(vazio)
+    assert r["available"] is False
+    assert r["installed"] == []
+
+
+def test_post_install_relata_os_agentes(checkout, sem_maquina):
+    assert installer.post_install(checkout)["agents"]["installed"] == ["um-agente"]
 
 
 # ── o slug do repositorio ───────────────────────────────────────────────────
