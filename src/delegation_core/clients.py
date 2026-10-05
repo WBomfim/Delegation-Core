@@ -299,3 +299,155 @@ def entry_summary(cfg: Config) -> dict:
         "authorization_header": f"Bearer {cfg.server_token}",
         "token_env_var": CODEX_TOKEN_ENV_VAR,
     }
+
+
+# ── Claude Code session hooks ────────────────────────────────────────────────
+#
+# Ate a v0.14.0 os hooks eram scripts copiados para ~/.delegation_core/hooks/ e
+# registrados a mao, um registro por script. A copia envelhecia sem aviso e o
+# fim de sessao abria dois processos. Agora o registro aponta para o comando
+# `delegation-core-hook` do proprio venv, um por evento, e e o instalador que o
+# escreve.
+
+CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
+
+#: Eventos registrados e o argumento que cada um passa ao comando.
+HOOK_EVENTS = {"SessionStart": "session-start", "SessionEnd": "session-end"}
+
+#: Os scripts copiados de antes, que o registro novo substitui.
+LEGACY_HOOK_SCRIPTS = ("session_start_brief.py", "session_export.py", "llama_session_stop.py")
+
+
+def hook_executable() -> Path:
+    """O `delegation-core-hook` do venv que esta rodando agora."""
+    import sys
+    nome = "delegation-core-hook.exe" if platform.system() == "Windows" else "delegation-core-hook"
+    return Path(sys.executable).parent / nome
+
+
+def _e_nosso(comando: str) -> bool:
+    """Registro escrito por nos: o comando novo, ou um dos scripts copiados."""
+    c = str(comando).replace("\\", "/")
+    return ("delegation-core-hook" in c
+            or any(f".delegation_core/hooks/{s}" in c for s in LEGACY_HOOK_SCRIPTS))
+
+
+def _ler_settings(path: Path) -> tuple[dict | None, str | None]:
+    if not path.exists():
+        return {}, None
+    raw = path.read_text(encoding="utf-8").strip()
+    if not raw:
+        return {}, None
+    try:
+        dados = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "settings.json is not valid JSON, not touching it"
+    if not isinstance(dados, dict):
+        return None, "settings.json is not an object, not touching it"
+    return dados, None
+
+
+def _gravar_settings(path: Path, dados: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and path.stat().st_size:
+        backup = path.with_suffix(".json.dc-backup")
+        if not backup.exists():
+            shutil.copy2(path, backup)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(dados, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _sem_os_nossos(grupos: list) -> tuple[list, int]:
+    """Os grupos de um evento sem os nossos registros. Hooks de outros ficam."""
+    restantes, removidos = [], 0
+    for grupo in grupos:
+        if not isinstance(grupo, dict):
+            restantes.append(grupo)
+            continue
+        hooks = grupo.get("hooks")
+        if not isinstance(hooks, list):
+            restantes.append(grupo)
+            continue
+        mantidos = [h for h in hooks
+                    if not (isinstance(h, dict) and _e_nosso(h.get("command", "")))]
+        removidos += len(hooks) - len(mantidos)
+        if mantidos:
+            restantes.append(dict(grupo, hooks=mantidos))
+    return restantes, removidos
+
+
+def register_session_hooks(settings_path: Path | None = None,
+                           executable: Path | None = None) -> dict:
+    """Registra `delegation-core-hook` nos eventos de sessao do Claude Code.
+
+    Troca qualquer registro nosso anterior (o comando ou os scripts copiados),
+    preserva os hooks de terceiros e, depois de gravar, apaga as copias antigas
+    em ~/.delegation_core/hooks/. Idempotente.
+    """
+    from .config import CONFIG_DIR
+
+    path = settings_path or CLAUDE_SETTINGS
+    exe = executable or hook_executable()
+    dados, erro = _ler_settings(path)
+    if erro:
+        return {"client": "claude-code-hooks", "path": str(path), "status": "error",
+                "detail": erro}
+    antes = json.dumps(dados, sort_keys=True)
+    hooks = dados.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return {"client": "claude-code-hooks", "path": str(path), "status": "error",
+                "detail": "hooks is not an object, not touching it"}
+
+    substituidos = 0
+    for evento, argumento in HOOK_EVENTS.items():
+        grupos, n = _sem_os_nossos(list(hooks.get(evento) or []))
+        substituidos += n
+        grupos.append({"matcher": "*",
+                       "hooks": [{"type": "command", "command": f'"{exe}" {argumento}'}]})
+        hooks[evento] = grupos
+
+    if json.dumps(dados, sort_keys=True) != antes:
+        _gravar_settings(path, dados)
+        status = "updated" if substituidos else "installed"
+    else:
+        status = "already-configured"
+
+    apagadas = []
+    pasta = CONFIG_DIR / "hooks"
+    for nome in LEGACY_HOOK_SCRIPTS:
+        for alvo in (pasta / nome, pasta / nome.replace(".py", ".dist.py")):
+            if alvo.is_file():
+                alvo.unlink()
+                apagadas.append(alvo.name)
+    if pasta.is_dir() and not any(p for p in pasta.iterdir() if p.name != "__pycache__"):
+        shutil.rmtree(pasta, ignore_errors=True)
+
+    return {"client": "claude-code-hooks", "path": str(path), "status": status,
+            "executable": str(exe), "replaced": substituidos,
+            "legacy_copies_removed": apagadas}
+
+
+def unregister_session_hooks(settings_path: Path | None = None) -> dict:
+    """Tira os nossos registros de sessao; os de terceiros ficam."""
+    path = settings_path or CLAUDE_SETTINGS
+    dados, erro = _ler_settings(path)
+    if erro:
+        return {"client": "claude-code-hooks", "path": str(path), "status": "error",
+                "detail": erro}
+    hooks = dados.get("hooks")
+    if not isinstance(hooks, dict):
+        return {"client": "claude-code-hooks", "path": str(path), "status": "absent"}
+    removidos = 0
+    for evento in list(hooks):
+        grupos, n = _sem_os_nossos(list(hooks.get(evento) or []))
+        removidos += n
+        if grupos:
+            hooks[evento] = grupos
+        else:
+            del hooks[evento]
+    if not removidos:
+        return {"client": "claude-code-hooks", "path": str(path), "status": "absent"}
+    _gravar_settings(path, dados)
+    return {"client": "claude-code-hooks", "path": str(path), "status": "removed",
+            "removed": removidos}

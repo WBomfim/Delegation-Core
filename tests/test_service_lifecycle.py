@@ -121,17 +121,56 @@ def test_windows_encerra_e_roda_a_tarefa(comandos, monkeypatch):
     assert comandos["chamadas"][1]["cmd"] == ["schtasks", "/Run", "/TN", "delegation-core"]
 
 
-def test_windows_com_fallback_de_startup_nao_reporta_falha(comandos, monkeypatch, tmp_path):
-    """Quando a instalacao caiu no atalho da pasta Startup nao ha tarefa para
-    encerrar. Isso e "nao instalado", nao "falhou": o chamador nao tem o que
-    fazer com uma falha aqui."""
+class _Proc:
+    def __init__(self, pid, cmdline):
+        self.pid, self._cmd, self.terminado = pid, cmdline, False
+
+    def cmdline(self):
+        return self._cmd
+
+    def terminate(self):
+        self.terminado = True
+
+
+def test_windows_no_modo_atalho_stop_encerra_o_processo_do_daemon(comandos, monkeypatch, tmp_path):
+    """Sem tarefa agendada (instalacao sem elevacao) o stop respondia
+    "not_installed" e o processo seguia de pe. O update entao nao conseguia
+    religar nem substituir os arquivos, e sobrava subir a mao: num Windows de
+    02/10/2026 isso deixou o daemon rodando pelo Python global do PATH."""
     _em("Windows", monkeypatch)
     _startup_isolado(monkeypatch, tmp_path)
     comandos["resultado"] = (1, "ERROR: The system cannot find the file specified.")
-    cmd = service.WIN_STARTUP_CMD
-    cmd.write_text("@echo off", encoding="utf-8")
+    service.WIN_STARTUP_CMD.write_text("@echo off", encoding="utf-8")
+    daemon = _Proc(10, [r"C:\Python312\python.exe", "-m", "delegation_core", "run"])
+    outro = _Proc(11, [r"C:\Python312\python.exe", "-m", "http.server"])
+    monkeypatch.setattr(service, "_processos_candidatos", lambda: [daemon, outro])
+    monkeypatch.setattr(service, "_esperar_fim", lambda procs, timeout: [])
 
-    assert service.stop()["status"] == "not_installed"
+    r = service.stop()
+    assert r["status"] == "stopped"
+    assert daemon.terminado and not outro.terminado
+
+
+def test_windows_no_modo_atalho_sem_processo_rodando_e_not_running(comandos, monkeypatch, tmp_path):
+    _em("Windows", monkeypatch)
+    _startup_isolado(monkeypatch, tmp_path)
+    comandos["resultado"] = (1, "ERROR")
+    service.WIN_STARTUP_CMD.write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(service, "_processos_candidatos", lambda: [])
+    assert service.stop()["status"] == "not_running"
+
+
+def test_windows_no_modo_atalho_start_executa_o_launcher(comandos, monkeypatch, tmp_path):
+    """O launcher e o que o instalador gravou com o Python do venv; subir por
+    ele e o que garante o interpretador certo."""
+    _em("Windows", monkeypatch)
+    _startup_isolado(monkeypatch, tmp_path)
+    comandos["resultado"] = (1, "ERROR")
+    service.WIN_STARTUP_CMD.write_text("@echo off", encoding="utf-8")
+    abertos = []
+    monkeypatch.setattr(service, "_abrir_launcher", lambda caminho: abertos.append(caminho))
+    assert service.start()["status"] == "started"
+    assert abertos == [service.WIN_STARTUP_CMD]
 
 
 def test_windows_sem_tarefa_e_sem_fallback_e_falha(comandos, monkeypatch, tmp_path):

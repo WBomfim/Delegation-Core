@@ -215,6 +215,12 @@ class _deadline:
         self.seconds = seconds
 
     def __enter__(self):
+        if not hasattr(signal, "SIGALRM"):
+            # Windows: sem SIGALRM nao ha como interromper o laco na thread
+            # principal. A logica e a mesma em toda plataforma; Linux e macOS
+            # cobrem.
+            pytest.skip("precisa de SIGALRM")
+
         def fire(signum, frame):
             raise _RunawayLoop(f"chunk_text did not finish within {self.seconds}s")
 

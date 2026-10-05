@@ -414,6 +414,32 @@ def resolver_dispositivo(preferencia: str | None = "auto") -> str:
     return escolha
 
 
+_BLOQUEIO_DO_WINDOWS = ("Application Control", "WinError 4551", "4551",
+                        "Controle de Aplicativo")
+
+
+def _importar_sentence_transformers():
+    import sentence_transformers  # noqa: F401  (puxa o torch e as DLLs dele)
+
+
+def explicar_falha_de_import(e: BaseException) -> str:
+    """O que dizer quando o BGE nao importa, sem esconder a causa.
+
+    O chromadb troca QUALQUER ImportError por "The sentence_transformers python
+    package is not installed", sem encadear a causa. Num Windows de 02/10/2026
+    a causa era o Smart App Control bloqueando `torch\\_C...pyd`: pacote
+    instalado, DLL proibida de carregar. Reinstalar nao resolve isso, e a frase
+    do chromadb mandava reinstalar.
+    """
+    texto = f"{type(e).__name__}: {e}"
+    if any(m in str(e) for m in _BLOQUEIO_DO_WINDOWS):
+        return ("embedding model unavailable: Windows blocked a native PyTorch DLL "
+                "(Smart App Control or App Control for Business). The package IS "
+                "installed; reinstalling will not help. Allow the DLLs under the "
+                f"venv's torch folder or disable the policy. Original error: {texto}")
+    return f"embedding model unavailable: could not import sentence_transformers ({texto})"
+
+
 def make_bge_embedding_function(model_name: str, max_seq_length: int | None = None,
                                 batch_size: int | None = None,
                                 device: str | None = "auto"):
@@ -430,6 +456,12 @@ def make_bge_embedding_function(model_name: str, max_seq_length: int | None = No
     meaning "leave the model's own default alone", so every caller that predates
     them behaves exactly as before.
     """
+    # Importado aqui, antes do chromadb, para a causa real sobreviver: depois
+    # dele, uma DLL bloqueada vira "not installed".
+    try:
+        _importar_sentence_transformers()
+    except Exception as e:
+        raise RuntimeError(explicar_falha_de_import(e)) from e
     from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 
     max_seq_length = _effective_max_seq_length(model_name, max_seq_length)

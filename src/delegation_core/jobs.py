@@ -204,7 +204,7 @@ TAREFAS_EXCLUSIVAS = frozenset({
     "ingest_folder",       # o defeito de 31/08, mecanizado em vez de instruido
     "ingest_configured",   # todas as fontes declaradas de uma vez (PR#2)
 })
-#: `ingest_configured` entrou com o PR#2 do William (29/09/2026). Ate la ficava
+#: `ingest_configured` entrou com o PR #2 (29/09/2026). Ate la ficava
 #: fora de proposito, porque exclusividade para tarefa que ninguem submete e
 #: protecao dada a ninguem, e o teste que confere os nomes contra o server.py
 #: derrubaria a entrada. Sem argumento ela ingere TODAS as fontes, entao duas

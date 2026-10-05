@@ -1,8 +1,9 @@
 name: Build dashboard
 
 # Manual runs for iterating on the build itself, plus a real release whenever
-# a dashboard-v* tag is pushed. Never on every push/PR — this is a private repo
-# and these builds aren't meant to run automatically yet.
+# a dashboard-v* tag is pushed. Not on every push/PR: a three-platform Tauri
+# build is slow and only matters for a release. The Python suite runs on every
+# push and PR in testes.yml.
 on:
   workflow_dispatch: {}
   push:

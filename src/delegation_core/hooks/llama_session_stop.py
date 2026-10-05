@@ -35,10 +35,8 @@ catches a *busy* neighbour, not an idle one. Guard 3 is the one that protects wo
 in flight. If you run two agents side by side and want the model to survive the
 first one closing, use the sentry file.
 
-Requires only stdlib: runs with system Python 3.11+, no venv needed.
-
-Hook registration (append to the SessionEnd list in ~/.claude/settings.json):
-  { "type": "command", "command": "python3 /path/to/hooks/llama_session_stop.py" }
+Only stdlib. Runs as the second step of `delegation-core-hook session-end`
+(see entrada.py), after the transcript export, in the same process.
 """
 
 import json
@@ -173,10 +171,12 @@ def stop(pid: int) -> str:
         return "sem permissao para SIGKILL"
 
 
-def main() -> int:
+def main(raw: str | None = None) -> int:
     session_id = ""
     try:
-        raw = sys.stdin.read().strip()
+        if raw is None:
+            raw = sys.stdin.read()
+        raw = raw.strip()
         if raw:
             session_id = str(json.loads(raw).get("session_id", ""))
     except Exception:
@@ -213,10 +213,3 @@ def main() -> int:
     log(f"parando llama-server pid={pid} porta={port} sessao={session_id[:8] or '?'}: {stop(pid)}")
     return 0
 
-
-if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except Exception as e:               # nunca derrubar o encerramento da sessao
-        log(f"erro nao tratado, ignorado: {type(e).__name__}: {e}")
-        sys.exit(0)

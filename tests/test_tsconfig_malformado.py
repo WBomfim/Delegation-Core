@@ -22,7 +22,10 @@ from delegation_core.graph.extractors.resolution import _read_tsconfig_aliases
 def _le(tmp_path: Path, doc) -> dict:
     f = tmp_path / "tsconfig.json"
     f.write_text(json.dumps(doc), encoding="utf-8")
-    return _read_tsconfig_aliases(f, tmp_path, seen=set())
+    achado = _read_tsconfig_aliases(f, tmp_path, seen=set())
+    # Caminho absoluto do sistema: no Windows sai com "\\". As asserçoes
+    # olham o sufixo, entao normaliza o separador.
+    return {k: [str(v).replace("\\", "/") for v in vs] for k, vs in achado.items()}
 
 
 MALFORMADOS = {

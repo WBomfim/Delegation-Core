@@ -50,7 +50,7 @@ def _aliases(frontmatter: str):
 
 
 def test_virgula_no_titulo_nao_parte_o_alias_em_dois():
-    alias = "Reuniao com Abner - regua do item 2, tetos de bolsao"
+    alias = "Reuniao com o cliente - regua do item 2, tetos de bolsao"
     saida = _merge_alias("aliases: [Primeiro]", alias)
     assert _aliases(saida) == ["Primeiro", alias]
 
@@ -96,7 +96,7 @@ def test_hash_em_lista_de_bloco_nao_e_truncado():
 
 def test_virgula_em_lista_de_bloco_continua_inteira():
     """Este ramo ja estava certo para virgula. Pinado para nao regredir."""
-    alias = "Reuniao com Abner - item 2, tetos"
+    alias = "Reuniao com o cliente - item 2, tetos"
     saida = _merge_alias('aliases:\n  - "Primeiro"', alias)
     assert _aliases(saida) == ["Primeiro", alias]
 

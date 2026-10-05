@@ -160,10 +160,14 @@ def git_state(root: Path) -> dict:
     }
 
 
-# ── shipped docs and hooks ───────────────────────────────────────────────────
+# ── shipped docs ─────────────────────────────────────────────────────────────
 
 def refresh_shipped_files(root: Path) -> dict:
-    """Copy AGENT_GUIDE/CLAUDE_SYSTEM_PROMPT and the hooks into CONFIG_DIR.
+    """Copy AGENT_GUIDE/CLAUDE_SYSTEM_PROMPT into CONFIG_DIR.
+
+    The session hooks used to be copied here too. Since v0.15.0 they run from
+    the installed package (`delegation-core-hook`) and are registered, not
+    copied: see clients.register_session_hooks.
 
     Never clobbers a file the user changed: theirs is kept and the shipped copy
     lands beside it as `<name>.dist.<ext>` so the two can be diffed on purpose.
@@ -181,7 +185,6 @@ def refresh_shipped_files(root: Path) -> dict:
     doing the same job correctly, had produced no `.dist.py` at all.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    (CONFIG_DIR / "hooks").mkdir(parents=True, exist_ok=True)
     resultado: dict = {"installed": [], "kept_yours": [], "unchanged": [], "missing": []}
 
     def _copiar(origem: Path, destino: Path, rotulo: str) -> None:
@@ -202,9 +205,6 @@ def refresh_shipped_files(root: Path) -> dict:
     for nome in SHIPPED_DOCS:
         _copiar(root / nome, CONFIG_DIR / nome, nome)
 
-    for hook in sorted((root / "hooks").glob("*.py")) if (root / "hooks").is_dir() else []:
-        _copiar(hook, CONFIG_DIR / "hooks" / hook.name, f"hooks/{hook.name}")
-
     return resultado
 
 
@@ -217,10 +217,6 @@ def stale_dist_copies() -> list[str]:
     """
     sobras = []
     for base in CONFIG_DIR.glob("*.dist.*"):
-        real = base.with_name(base.name.replace(".dist", "", 1))
-        if real.is_file() and filecmp.cmp(base, real, shallow=False):
-            sobras.append(str(base.relative_to(CONFIG_DIR)))
-    for base in (CONFIG_DIR / "hooks").glob("*.dist.*"):
         real = base.with_name(base.name.replace(".dist", "", 1))
         if real.is_file() and filecmp.cmp(base, real, shallow=False):
             sobras.append(str(base.relative_to(CONFIG_DIR)))
@@ -334,8 +330,7 @@ def update(check_only: bool = False, restart: bool = True,
             resultado["detail"] = f"pip install failed:\n{detalhe}"
             return resultado
 
-        _passo("refresh_docs_and_hooks", True, **refresh_shipped_files(raiz))
-        _passo("register_service", True, **service.install())
+        passos.extend(_finish_in_new_code(raiz))
     finally:
         # Whatever happened above, the machine does not get left without a
         # daemon it had before this command ran.
@@ -355,6 +350,53 @@ def update(check_only: bool = False, restart: bool = True,
     resultado["steps"] = passos
     resultado["stale_dist_copies"] = stale_dist_copies()
     return resultado
+
+
+def finish_update(root: Path) -> list[dict]:
+    """The steps of `update` that come after `pip install`.
+
+    Kept apart so they can run in the code that pip just installed, not in the
+    code that was loaded when `update` started. See `_finish_in_new_code`.
+    """
+    from .clients import register_session_hooks
+
+    passos = [{"step": "refresh_docs", "ok": True, **refresh_shipped_files(root)}]
+    ganchos = register_session_hooks()
+    passos.append({"step": "register_hooks", "ok": ganchos["status"] != "error", **ganchos})
+    passos.append({"step": "register_service", "ok": True, **service.install()})
+    return passos
+
+
+#: Marks the JSON line `update-finish` prints, so a warning that a library
+#: writes to stdout on import cannot be mistaken for the result.
+FINISH_MARKER = "DC_UPDATE_FINISH "
+
+
+def _finish_in_new_code(root: Path) -> list[dict]:
+    """Run `finish_update` in a fresh interpreter, i.e. in the new version.
+
+    The process running `update` imported its modules before `git pull` and
+    `pip install` replaced them, so whatever it calls afterwards is the OLD
+    version. On 03/10/2026 the update to v0.15.0 ran v0.14's steps: the hooks
+    that v0.15 moved into the package were never registered, and had to be
+    registered by hand. A child process imports the code that is on disk now.
+
+    When the child cannot do it (an older version without `update-finish`, a
+    crash, a timeout), the steps run here instead, with the old code. That is
+    what every update did before, and is better than skipping them; the step
+    `finish_in_new_code` records which of the two happened.
+    """
+    cmd = [sys.executable, "-m", "delegation_core", "update-finish", "--root", str(root)]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        linhas = [l for l in p.stdout.splitlines() if l.startswith(FINISH_MARKER)]
+        if p.returncode == 0 and linhas:
+            passos = json.loads(linhas[-1][len(FINISH_MARKER):])
+            return [{"step": "finish_in_new_code", "ok": True}] + passos
+        motivo = (p.stderr or p.stdout).strip()[-500:] or f"exit code {p.returncode}"
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as e:
+        motivo = f"{type(e).__name__}: {e}"
+    return [{"step": "finish_in_new_code", "ok": False, "detail": motivo}] + finish_update(root)
 
 
 # ── uninstall ────────────────────────────────────────────────────────────────
@@ -593,6 +635,9 @@ def uninstall(dry_run: bool = False) -> dict:
         )
         return relatorio
 
+    from .clients import unregister_session_hooks
+    ganchos = unregister_session_hooks()
+    _passo("unregister_hooks", ganchos["status"] != "error", **ganchos)
     _passo("unregister_daemon", True, **service.uninstall())
     _passo("unregister_llama_autostart", True, **service.uninstall_llama_autostart())
 
@@ -997,7 +1042,9 @@ def post_install(root: Path) -> dict:
     """
     relatorio: dict = {"root": str(root)}
 
-    relatorio["docs_and_hooks"] = refresh_shipped_files(root)
+    relatorio["docs"] = refresh_shipped_files(root)
+    from .clients import register_session_hooks
+    relatorio["hooks"] = register_session_hooks()
     relatorio["skills"] = install_skills(root)
     relatorio["agents"] = install_agents(root)
     relatorio["dashboard"] = install_dashboard(root)

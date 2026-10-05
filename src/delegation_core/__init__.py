@@ -19,4 +19,4 @@
 # obvious alternative and is wrong here — an editable install freezes its
 # metadata at install time, and this machine's reported 0.7.0 while the source
 # said 0.10.0.
-__version__ = "0.13.0"
+__version__ = "0.15.0"

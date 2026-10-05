@@ -110,7 +110,7 @@ def _write_vault_note(vault_manager, folder: str, title: str, content: str) -> s
     dest.parent.mkdir(parents=True, exist_ok=True)
     full = _frontmatter(title) + content
     dest.write_text(full, encoding="utf-8")
-    rel = str(dest.relative_to(cfg.vault))
+    rel = dest.relative_to(cfg.vault).as_posix()
     vault_manager.index_note(full, vault_manager.note_metadata(rel, title, folder))
 
     try:
@@ -151,7 +151,7 @@ def _write_wiki_article(vault_manager, wiki_folder: str, graph_name: str, articl
     dest.parent.mkdir(parents=True, exist_ok=True)
     full = _frontmatter(title, extra=f"graph: {graph_name}\n") + content
     dest.write_text(full, encoding="utf-8")
-    rel = str(dest.relative_to(cfg.vault))
+    rel = dest.relative_to(cfg.vault).as_posix()
     vault_manager.index_note(full, vault_manager.note_metadata(rel, title, wiki_folder))
     return rel
 
@@ -196,7 +196,7 @@ def _clear_previous_filing(vault_manager, previous_paths: list[str], wiki_dir_re
         logger.warning("graph wiki folder %r is not a %s/<name> directory inside "
                        "the vault - refusing to clear it", wiki_dir_rel, WIKI_SUBDIR)
     elif wiki_root.is_dir():
-        stale += [str(p.relative_to(cfg.vault)) for p in wiki_root.rglob("*.md")]
+        stale += [p.relative_to(cfg.vault).as_posix() for p in wiki_root.rglob("*.md")]
     for rel in previous_paths or []:
         p = resolve_in_vault(cfg.vault, rel)
         if p is None:

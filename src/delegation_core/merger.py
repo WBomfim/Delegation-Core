@@ -4,11 +4,11 @@ merger.py — Near-duplicate note merging.
 Extracted from organizer.py in v0.2 so the merge policy is testable and
 reusable independently of the main inbox pipeline.
 
-Merge guards (SAAD):
+Merge guards (field deployment A):
   _MAX_INCOMING  — documents larger than this are standalone artifacts
   _MAX_TARGET    — notes larger than this refuse incoming merges
 
-Never-merge folders (MAURICIO):
+Never-merge folders (field deployment B):
   sessions/ and meetings/ are chronological records; merging unrelated entries
   into them caused multiple sessions to pile up into one shared note.
 """
@@ -35,7 +35,7 @@ def _never_merge(cfg) -> frozenset[str]:
     maiuscula, entao a guarda NAO DISPARAVA: medido em 03/09/2026, nenhuma das
     nove pastas do vault era bloqueada. A guarda existe porque numa instalacao
     de campo o merge empilhou varias sessoes nao relacionadas numa nota so, que
-    e o caso MAURICIO citado no topo deste modulo. `vault.py:1553` ja fazia isto
+    e o caso da implantacao B citado no topo deste modulo. `vault.py:1553` ja fazia isto
     certo, com um comentario dizendo exatamente que "a vault whose folder is
     'Sessions' would otherwise match nothing here". A licao foi aprendida la e
     nunca chegou aqui.

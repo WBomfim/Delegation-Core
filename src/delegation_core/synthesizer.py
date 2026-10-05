@@ -3,7 +3,7 @@ synthesizer.py — LLM-powered note synthesis.
 
 v0.2: language-configurable via cfg.synthesis_lang ("en" | "pt").
   "en"  — English structured Obsidian notes (default)
-  "pt"  — Portuguese prompts from the MAURICIO deployment
+  "pt"  — Portuguese prompts from the field deployment B
 
 When cfg.synthesis_enabled is False the pipeline is bypassed and the organizer
 files the raw extracted text directly (classify-only mode, equivalent to v0.1).
@@ -123,7 +123,7 @@ Source text:
 {content}
 """
 
-# ── Portuguese prompts (MAURICIO deployment) ─────────────────────────────────
+# ── Portuguese prompts (field deployment B) ─────────────────────────────────
 
 _PT_SYSTEM = (
     "Você produz notas Obsidian Markdown limpas em português do Brasil (PT-BR). Output: apenas Markdown — "

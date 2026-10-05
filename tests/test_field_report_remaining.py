@@ -14,7 +14,7 @@ import pytest
 from delegation_core.config import Config
 from delegation_core.service import launchd_plist_text
 
-HOOKS = Path(__file__).resolve().parent.parent / "hooks"
+HOOKS = Path(__file__).resolve().parent.parent / "src" / "delegation_core" / "hooks"
 sys.path.insert(0, str(HOOKS))
 
 

@@ -31,45 +31,60 @@ import sys
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".delegation_core"
-INSTALLED_HOOKS = CONFIG_DIR / "hooks"
 
 #: Folders delegation-core creates itself; a case-variant sibling of a
 #: configured folder is a bug, but these are not.
 _VAULT_INTERNAL = {"_inbox", "_processed", "_failed", "_archive"}
 
 
-def _repo_hooks_dir() -> Path | None:
-    """Locate the packaged hooks/ directory, if this is an editable/source install."""
-    candidate = Path(__file__).resolve().parents[2] / "hooks"
-    return candidate if candidate.is_dir() else None
+def check_hooks(settings_path: Path | None = None) -> dict:
+    """Os hooks de sessao estao registrados no Claude Code, e apontam para algo
+    que existe?
 
+    Ate a v0.14.0 este check comparava as copias de ~/.delegation_core/hooks/
+    com a arvore, porque a copia envelhecia sem aviso. Desde a v0.15.0 nao ha
+    copia: o registro aponta para o `delegation-core-hook` do venv. O que pode
+    dar errado agora e o registro faltar, apontar para um executavel que sumiu,
+    ou ainda chamar um dos scripts copiados de antes.
+    """
+    import json as _json
 
-def check_hook_drift() -> dict:
-    repo = _repo_hooks_dir()
-    if repo is None:
-        return {"check": "hook_drift", "status": "skip",
-                "detail": "packaged hooks/ not found (installed from a wheel, not a source tree)"}
-    if not INSTALLED_HOOKS.is_dir():
-        return {"check": "hook_drift", "status": "warn",
-                "detail": f"no hooks installed at {INSTALLED_HOOKS}",
-                "fix": "run install.sh (or copy hooks/ there) to enable session export/brief"}
+    from .clients import CLAUDE_SETTINGS, HOOK_EVENTS, LEGACY_HOOK_SCRIPTS
 
-    stale, missing = [], []
-    for src in sorted(repo.glob("*.py")):
-        dst = INSTALLED_HOOKS / src.name
-        if not dst.exists():
-            missing.append(src.name)
-        elif src.read_bytes() != dst.read_bytes():
-            stale.append(src.name)
+    path = settings_path or CLAUDE_SETTINGS
+    fix = "delegation-core update  (registers the session hooks)"
+    try:
+        dados = _json.loads(path.read_text(encoding="utf-8") or "{}") if path.exists() else {}
+    except (OSError, ValueError) as e:
+        return {"check": "hooks", "status": "warn",
+                "detail": f"{path} unreadable ({type(e).__name__}): hooks not checked"}
+    eventos = dados.get("hooks") if isinstance(dados, dict) else None
+    eventos = eventos if isinstance(eventos, dict) else {}
 
-    if not stale and not missing:
-        return {"check": "hook_drift", "status": "ok",
-                "detail": f"{len(list(repo.glob('*.py')))} hook(s) match the source tree"}
-    return {
-        "check": "hook_drift", "status": "warn",
-        "detail": f"stale: {stale or '-'} · missing: {missing or '-'}",
-        "fix": f"cp {repo}/*.py {INSTALLED_HOOKS}/",
-    }
+    comandos = {ev: [h.get("command", "") for g in (eventos.get(ev) or []) if isinstance(g, dict)
+                     for h in (g.get("hooks") or []) if isinstance(h, dict)]
+                for ev in HOOK_EVENTS}
+    antigos = sorted({s for cmds in comandos.values() for c in cmds for s in LEGACY_HOOK_SCRIPTS
+                      if s in str(c).replace("\\", "/")})
+    faltando, quebrados = [], []
+    for ev, arg in HOOK_EVENTS.items():
+        nossos = [c for c in comandos[ev] if "delegation-core-hook" in c and arg in c]
+        if not nossos:
+            faltando.append(ev)
+            continue
+        exe = nossos[0].split('"')[1] if nossos[0].startswith('"') else nossos[0].split()[0]
+        if not Path(exe).exists():
+            quebrados.append(f"{ev} -> {exe}")
+
+    if antigos:
+        return {"check": "hooks", "status": "warn",
+                "detail": f"still registered as copied scripts: {antigos}", "fix": fix}
+    if faltando or quebrados:
+        partes = ([f"not registered: {faltando}"] if faltando else []) + \
+                 ([f"executable missing: {quebrados}"] if quebrados else [])
+        return {"check": "hooks", "status": "warn", "detail": "; ".join(partes), "fix": fix}
+    return {"check": "hooks", "status": "ok",
+            "detail": "SessionStart and SessionEnd run delegation-core-hook"}
 
 
 def check_vault_folders(cfg) -> dict:
@@ -245,7 +260,7 @@ def check_index_location(cfg) -> dict:
     substitui arquivos do SQLite e do HNSW por baixo de um processo que os tem
     abertos e causa conhecida de dano, e nada avisava.
     """
-    from .recuperacao import caminho_local_do_indice, em_pasta_sincronizada
+    from .config import caminho_local_do_indice, em_pasta_sincronizada
     if not em_pasta_sincronizada(cfg.chroma_path):
         return {"check": "index_location", "status": "ok",
                 "detail": f"index at {cfg.chroma_path}, outside any synced folder"}
@@ -525,8 +540,7 @@ def check_local_fallback(cfg) -> dict:
 
 def _caminho_do_cli():
     """Onde mora o cli.py DESTA instalacao. Separado para o teste apontar noutro."""
-    from . import cli as _cli
-    return Path(_cli.__file__)
+    return Path(__file__).with_name("cli.py")
 
 
 def check_index_writers() -> dict:
@@ -587,12 +601,41 @@ def check_index_writers() -> dict:
             "detail": "every CLI command that opens the index routes through the daemon"}
 
 
+def check_devices(cfg, tem_cuda=None) -> dict:
+    """Onde roda cada modelo, e se os dois vao disputar a mesma placa.
+
+    Os dois na GPU funcionam, mas o arbitro (gpu.py) alterna: cada busca depois
+    de uma geracao recarrega o BGE, e cada geracao depois de uma busca recarrega
+    o modelo. Numa placa de 16 GB os dois nao cabem juntos.
+    """
+    from .embeddings import detect_device
+    from .engine import llama_device
+
+    embed = (getattr(cfg, "embed_device", "auto") or "auto").strip().lower()
+    if embed == "auto":
+        embed = detect_device() if tem_cuda is None else ("cuda" if tem_cuda() else "cpu")
+    modelo = llama_device(cfg)
+    if cfg.is_agent_mode:
+        modelo_desc = "nenhum (modo agente)"
+    else:
+        modelo_desc = modelo
+    detail = f"embeddings: {embed} · modelo local: {modelo_desc}"
+    disputa = (embed == "cuda" and not cfg.is_agent_mode and modelo != "cpu")
+    if disputa:
+        return {"check": "devices", "status": "warn",
+                "detail": detail + "; os dois disputam a GPU e se alternam nela",
+                "fix": 'ponha um na CPU: "embed_device": "cpu" (o BGE perde pouco) '
+                       'ou "llama_device": "cpu"'}
+    return {"check": "devices", "status": "ok", "detail": detail}
+
+
 def run_all(cfg) -> dict:
     """Run every check. Returns {status, counts, checks[]} with the worst status on top."""
     checks = [
         check_engine_mode(cfg),
+        check_devices(cfg),
         check_vault_folders(cfg),
-        check_hook_drift(),
+        check_hooks(),
         check_graph_extra(),
         check_ingest_registry(),
         check_graph_registry(cfg),

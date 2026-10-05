@@ -1,7 +1,7 @@
 """
 extractor.py : Convert file formats to plain text for vault ingestion.
 
-Supported: .md/.markdown/.mdx  .txt/.text  .csv  .html/.htm  .pdf  .docx  .xlsx  .pptx  .json
+Supported: .md/.markdown/.mdx  .txt/.text  .csv  .html/.htm  .pdf  .docx  .xlsx  .pptx  .json  imagens (EXIF + OCR)
 Images are not supported: convert to .txt before dropping in the inbox.
 
 All extractors return a string. Callers treat None or empty string as a failure
@@ -33,6 +33,9 @@ SUPPORTED: frozenset[str] = frozenset({
     ".pptx",
     ".json",
     ".yaml", ".yml",
+    # Imagem: EXIF + OCR pelo pacote `imagens`. 81 capturas de tela nesta
+    # maquina, 75 com texto legivel, nenhuma buscavel antes.
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff",
 })
 
 
@@ -214,6 +217,7 @@ def extract(path: Path) -> str | None:
         ".json": _json,
         ".yaml": _text,
         ".yml":  _text,
+        **{ext: _imagem for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff")},
     }
     fn = _map.get(suffix)
     if fn is None:
@@ -238,12 +242,28 @@ def format_label(path: Path) -> str:
         ".txt": "Text", ".text": "Text", ".csv": "CSV",
         ".html": "HTML", ".htm": "HTML", ".pdf": "PDF",
         ".docx": "Word", ".xlsx": "Excel", ".pptx": "PowerPoint",
+        ".png": "Imagem", ".jpg": "Imagem", ".jpeg": "Imagem", ".webp": "Imagem",
         ".json": "JSON", ".yaml": "YAML", ".yml": "YAML",
     }
     return labels.get(path.suffix.lower(), path.suffix.upper().lstrip("."))
 
 
 # ── extractors ────────────────────────────────────────────────────────────────
+
+def tessdata_padrao() -> Path | None:
+    """`DC_TESSDATA`, senao ~/.delegation_core/tessdata se existir (o `ocr-setup` baixa ali)."""
+    import os
+    if os.environ.get("DC_TESSDATA"):
+        return Path(os.environ["DC_TESSDATA"])
+    from .config import CONFIG_DIR
+    d = CONFIG_DIR / "tessdata"
+    return d if d.is_dir() else None
+
+
+def _imagem(path: Path) -> str:
+    from .imagens import ler_imagem, para_markdown
+    return para_markdown(ler_imagem(path, tessdata=tessdata_padrao()))
+
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")

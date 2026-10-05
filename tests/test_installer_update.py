@@ -16,6 +16,7 @@ Nada aqui toca pip, git, servico ou rede de verdade.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -118,16 +119,16 @@ def test_arquivo_REALMENTE_customizado_e_preservado(arvore):
     assert (cfg / "AGENT_GUIDE.dist.md").read_text() == "guia v2\n"
 
 
-def test_hooks_seguem_a_mesma_regra(arvore):
+def test_hooks_nao_sao_mais_copiados(arvore):
+    """Desde a v0.15.0 os hooks rodam do pacote e sao registrados, nao copiados
+    (clients.register_session_hooks). Uma arvore que ainda tenha hooks/ nao pode
+    fazer o refresh voltar a copiar."""
     raiz, cfg = arvore
-    destino = cfg / "hooks" / "session_export.py"
-    destino.parent.mkdir(exist_ok=True)
-    destino.write_text("# hook v2\n", encoding="utf-8")            # identico
 
     r = installer.refresh_shipped_files(raiz)
 
-    assert "hooks/session_export.py" in r["unchanged"]
-    assert not (cfg / "hooks" / "session_export.dist.py").exists()
+    assert not any("hooks/" in x for lista in r.values() for x in lista)
+    assert not (cfg / "hooks").exists()
 
 
 def test_arquivo_que_nao_veio_no_pacote_e_reportado(arvore):
@@ -191,6 +192,9 @@ def cenario(tmp_path, monkeypatch):
 
     monkeypatch.setattr(installer, "service", _ServicoFalso)
     monkeypatch.setattr(installer, "_pip_install", _pip)
+    # O fim do update roda num interpretador novo, onde estes dubles nao
+    # existiriam. Aqui ele roda no mesmo processo; o filho tem testes proprios.
+    monkeypatch.setattr(installer, "_finish_in_new_code", installer.finish_update)
     return {"raiz": raiz, "diario": diario, "estado": estado}
 
 
@@ -290,3 +294,83 @@ def test_daemon_que_nao_responde_apos_subir_e_reportado(cenario, monkeypatch):
     r = installer.update()
     assert r["status"] == "started_but_not_answering"
     assert "60s" in r["detail"]
+
+
+# ── o fim do update roda no codigo novo ─────────────────────────────────────
+
+class _Processo:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def test_fim_do_update_roda_num_interpretador_novo(monkeypatch, tmp_path):
+    """Em 03/10 o update para a v0.15 rodou os passos da v0.14, e os hooks
+    novos nao foram registrados. O fim tem que vir do codigo recem-instalado."""
+    chamadas = []
+    passos = [{"step": "register_hooks", "ok": True}]
+
+    def _run(cmd, **kw):
+        chamadas.append(cmd)
+        return _Processo(stdout="aviso de import qualquer\n"
+                                + installer.FINISH_MARKER + json.dumps(passos) + "\n")
+
+    monkeypatch.setattr(installer.subprocess, "run", _run)
+    monkeypatch.setattr(installer, "finish_update",
+                        lambda root: pytest.fail("rodou os passos no codigo velho"))
+
+    r = installer._finish_in_new_code(tmp_path)
+
+    assert chamadas[0][:3] == [installer.sys.executable, "-m", "delegation_core"]
+    assert chamadas[0][3] == "update-finish"
+    assert r == [{"step": "finish_in_new_code", "ok": True}] + passos
+
+
+@pytest.mark.parametrize("processo", [
+    _Processo(returncode=2, stderr="invalid choice: 'update-finish'"),
+    _Processo(returncode=0, stdout="sem a linha marcada\n"),
+])
+def test_filho_que_falha_cai_para_o_processo_atual(monkeypatch, tmp_path, processo):
+    """Versao antiga sem `update-finish`, ou filho que nao responde: os passos
+    rodam aqui mesmo, como antes, e o relatorio diz que foi assim."""
+    monkeypatch.setattr(installer.subprocess, "run", lambda cmd, **kw: processo)
+    monkeypatch.setattr(installer, "finish_update",
+                        lambda root: [{"step": "register_hooks", "ok": True}])
+
+    r = installer._finish_in_new_code(tmp_path)
+
+    assert r[0]["step"] == "finish_in_new_code" and r[0]["ok"] is False
+    assert r[0]["detail"]
+    assert r[1] == {"step": "register_hooks", "ok": True}
+
+
+def test_update_finish_imprime_a_linha_marcada(monkeypatch, tmp_path, capsys):
+    """O lado do filho: o comando escondido devolve os passos numa linha so."""
+    from delegation_core import cli
+
+    monkeypatch.setattr(installer, "finish_update",
+                        lambda root: [{"step": "refresh_docs", "ok": True, "root": str(root)}])
+    monkeypatch.setattr(sys, "argv", ["delegation-core", "update-finish", "--root", str(tmp_path)])
+
+    try:
+        codigo = cli.main()
+    except SystemExit as e:
+        codigo = e.code
+
+    saida = capsys.readouterr().out.splitlines()
+    marcada = [l for l in saida if l.startswith(installer.FINISH_MARKER)]
+    assert codigo in (0, None)
+    assert json.loads(marcada[-1][len(installer.FINISH_MARKER):])[0]["root"] == str(tmp_path)
+
+
+
+def test_update_chama_o_fim_no_codigo_novo_depois_do_pip(cenario, monkeypatch):
+    """Sem isto, um update() que voltasse a chamar finish_update direto
+    passaria em todos os testes acima."""
+    def _fim(root):
+        cenario["diario"].append("fim_novo")
+        return []
+
+    monkeypatch.setattr(installer, "_finish_in_new_code", _fim)
+    installer.update()
+    d = cenario["diario"]
+    assert d.index("pip") < d.index("fim_novo") < d.index("start")

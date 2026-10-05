@@ -133,6 +133,14 @@ def _sem_escrita_no_estado_real(tmp_path, monkeypatch):
                 monkeypatch.setattr(mod, atributo,
                                     raiz / valor.relative_to(_ESTADO_REAL), raising=False)
 
+    # ~/.claude/settings.json fica fora de ~/.delegation_core, e desde a v0.15.0
+    # o instalador registra os hooks de sessao nele. Os testes do instalador
+    # chamam post_install, update e uninstall: sem isto, gravariam no arquivo
+    # real de quem roda a suite.
+    from delegation_core import clients as clients_mod
+    monkeypatch.setattr(clients_mod, "CLAUDE_SETTINGS", raiz / "claude_settings.json",
+                        raising=False)
+
     yield raiz
 
 

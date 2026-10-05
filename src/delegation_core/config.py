@@ -113,6 +113,11 @@ class Config:
     llama_port: int = 8181
     llama_ctx: int = 4096
     llama_ngl: int = 999   # GPU layers to offload (999 = all)
+    #: Onde o modelo local roda, separado de onde roda o BGE (`embed_device`).
+    #: "auto": o llama.cpp decide pelas camadas de `llama_ngl` e pela VRAM livre.
+    #: "gpu": igual, e o processo do modelo nunca herda uma placa escondida.
+    #: "cpu": zero camadas na GPU, e a placa escondida so do processo do modelo.
+    llama_device: str = "auto"
     #: Let a reasoning model spend the token budget on its private thought
     #: channel. Off, because leaving it on fails silently: the model writes
     #: into `reasoning_content` first and only then into `content`, so a
@@ -139,11 +144,11 @@ class Config:
 
     # ── v0.2: hardware budget mode ───────────────────────────────────────────
     # "cpu": applies strict token caps to stay within the 120s MCP timeout on
-    #        CPU-only machines (SAAD deployment pattern).
+    #        CPU-only machines (field deployment A pattern).
     # "normal": no additional caps beyond max_tokens.
     budget_mode: str = "normal"
 
-    # ── v0.2: external ingestion (ABNER) ─────────────────────────────────────
+    # ── v0.2: external ingestion (field deployment C) ─────────────────────────────────────
     ingest_chunk_size: int = 3072
     ingest_chunk_overlap: int = 200
 
@@ -190,12 +195,12 @@ class Config:
     # for one client's retention metrics returned six of ten results from
     # another client, and there was no parameter that could exclude them.
     # `client:` in a note's frontmatter is promoted to searchable metadata,
-    # normalised through client_slug so Gazin and gazin land in one bucket.
+    # normalised through client_slug so Nortex and nortex land in one bucket.
     #
     # client_path_roots makes the same filter reach INGESTED files, which are
     # the bulk of a real index (92.8% of rows on the deployment that reported
     # this). The client is the path segment directly under a listed root:
-    # "/Work/Oksigen" turns /Work/Oksigen/Gazin/deck.pdf into client "gazin".
+    # "/Work/Acme" turns /Work/Acme/Nortex/deck.pdf into client "nortex".
     # Empty by default: deriving a client from an unconfigured path shape would
     # invent labels, and a wrong label silently excludes a document from the
     # filter that should have found it, which is worse than no label at all.
@@ -589,3 +594,26 @@ def with_lang(system: str, cfg) -> str:
     if not frase:
         return system
     return f"{system.rstrip()} {frase}"
+
+
+#: Trechos de caminho que denunciam uma pasta sincronizada por cliente de nuvem.
+#: Comparados em minusculas contra cada parte do caminho.
+_MARCAS_DE_NUVEM = (
+    "onedrive",            # "OneDrive", "OneDrive - Empresa"
+    "mobile documents",    # iCloud Drive no macOS
+    "icloud drive",
+    "dropbox",
+    "google drive",
+    "googledrive",
+    "cloudstorage",        # ~/Library/CloudStorage, onde o macOS monta todos
+)
+
+
+def em_pasta_sincronizada(caminho: Path) -> bool:
+    partes = [p.lower() for p in Path(caminho).expanduser().parts]
+    return any(marca in parte for parte in partes for marca in _MARCAS_DE_NUVEM)
+
+
+def caminho_local_do_indice() -> Path:
+    """Onde o indice mora quando nao pode morar dentro do vault."""
+    return Path(CONFIG_DIR) / "indice"

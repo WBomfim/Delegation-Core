@@ -97,16 +97,33 @@ def test_a_document_folder_reports_no_hint_and_no_unsupported_key(cfg, tmp_path)
 
 
 def test_non_code_unsupported_files_are_reported_without_the_code_hint(cfg, tmp_path):
-    """A folder of images is worth reporting, but graph_build is not the answer."""
+    """A folder of unsupported assets is worth reporting, but graph_build is not the answer."""
+    src = tmp_path / "assets"
+    src.mkdir()
+    (src / "a.md").write_text("# a", encoding="utf-8")
+    (src / "logo.svg").write_text("<svg/>", encoding="utf-8")
+
+    result = IngestManager(FakeVault(cfg)).ingest(str(src))
+
+    assert result["unsupported"] == {".svg": 1}
+    assert "hint" not in result
+
+
+def test_image_without_text_is_not_indexed(cfg, tmp_path):
+    """Images are read by OCR since 27/09; one with no text (a broken logo here)
+    must not become a row without content, which is what the old test guarded."""
     src = tmp_path / "assets"
     src.mkdir()
     (src / "a.md").write_text("# a", encoding="utf-8")
     (src / "logo.png").write_bytes(b"\x89PNG")
 
-    result = IngestManager(FakeVault(cfg)).ingest(str(src))
+    vault = FakeVault(cfg)
+    result = IngestManager(vault).ingest(str(src))
 
-    assert result["unsupported"] == {".png": 1}
-    assert "hint" not in result
+    assert "unsupported" not in result or ".png" not in result["unsupported"]
+    caminhos = [m.get("path", "") for m in vault.indexed]
+    assert any(c.endswith("a.md") for c in caminhos)
+    assert not any(c.endswith("logo.png") for c in caminhos)
 
 
 # ── forget ───────────────────────────────────────────────────────────────────

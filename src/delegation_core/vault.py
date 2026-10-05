@@ -5,10 +5,10 @@ Delegates embedding setup to embeddings.py (new in v0.2).
 VaultManager owns: ChromaDB lifecycle, search, index, reindex, maintenance helpers.
 
 v0.2 improvements:
-  - Lazy init with double-checked lock (ABNER) + warm_up() for background pre-loading
-  - doc_id parameter on index_note for chunked external ingestion (ABNER)
-  - Orphan cleanup in reindex_vault: drops rows whose path no longer exists (SAAD)
-  - anonymized_telemetry=False in ChromaDB client (SAAD)
+  - Lazy init with double-checked lock (field deployment C) + warm_up() for background pre-loading
+  - doc_id parameter on index_note for chunked external ingestion (field deployment C)
+  - Orphan cleanup in reindex_vault: drops rows whose path no longer exists (field deployment A)
+  - anonymized_telemetry=False in ChromaDB client (field deployment A)
   - _ensure_ready() guard on every public method
 
 v0.3 improvements:
@@ -30,7 +30,6 @@ v0.12 improvements:
 
 import json
 import logging
-import os
 import re
 import threading
 from datetime import datetime
@@ -44,8 +43,8 @@ from .embeddings import (
     effective_chunk_chars,
     make_bge_embedding_function,
     profile_for,
+    resolver_dispositivo,
 )
-from .linker import frontmatter_aliases
 
 logger = logging.getLogger("vault")
 
@@ -61,6 +60,8 @@ from .notes import (  # noqa: F401
     _countable_wikilinks,
     _DATE_PREFIX_RE,
     _EXTRA_CHUNK_SUFFIX_RE,
+    _frontmatter_parses,
+    frontmatter_aliases,
     _INVALID_FILENAME_CHARS,
     _LEADING_FRONTMATTER_RE,
     _merge_alias,
@@ -88,37 +89,11 @@ index_note() calls across both paths.
 """
 
 
-def _frontmatter_parses(content: str) -> bool:
-    """Does this note's frontmatter block survive a real YAML parser?
-
-    True for a note with no frontmatter at all: an absent block is not a broken
-    one, and counting it would invent a defect in every plain note.
-
-    PyYAML is a declared dependency of this package (pyproject: pyyaml>=6.0) and
-    already imported lazily by sidecar.py and graph/manifest_ingest.py, so this
-    adds no new requirement. Imported inside the function for the same reason
-    they do it: the health scan is the only caller and it is not on the import
-    path of the daemon's startup.
-    """
-    if not content.startswith("---"):
-        return True
-    # The same regex compose_note uses to find a caller's block, so "what counts
-    # as frontmatter" has one definition here and is not re-guessed.
-    m = _LEADING_FRONTMATTER_RE.match(content)
-    if m is None:
-        # Opens a block and never closes it. Not something YAML can be asked
-        # about, and not something to report as a parse failure either: the
-        # existing `truncated` metric is what covers a note cut off mid-write.
-        return True
-    try:
-        import yaml
-    except ImportError:      # pragma: no cover - declared dependency
-        return True
-    try:
-        yaml.safe_load(m.group(1))
-    except Exception:
-        return False
-    return True
+def _load_registry_for_links() -> dict:
+    """O registro de ingestao, numa funcao propria para o teste poder troca-lo
+    sem tocar em disco. Import tardio: o `ingest` nao precisa carregar junto."""
+    from .ingest import _load_registry
+    return _load_registry()
 
 
 class VaultManager:
@@ -127,6 +102,8 @@ class VaultManager:
         self.collection = None
         self.ef = None
         self._initialized = False
+        #: Ultima falha ao subir BGE/ChromaDB, ou None. Lida pelo heartbeat.
+        self.init_error: str | None = None
         self._init_lock = threading.Lock()
         self._client = None
         self._disk_state: tuple | None = None
@@ -215,8 +192,10 @@ class VaultManager:
                 # to that was make_bge_embedding_function's silent fall back to
                 # CPU: search kept working and got an order of magnitude slower
                 # with nothing in the response to say so.
-                gpu.take("embeddings")
                 if self.ef is None:
+                    # So pede a placa quem vai usa-la: BGE na CPU derrubava o modelo local.
+                    if resolver_dispositivo(getattr(self.cfg, "embed_device", "auto")) == "cuda":
+                        gpu.take("embeddings")
                     # The caps are passed here or nowhere: the config fields exist
                     # but stay inert until they reach the embedding function, and
                     # an uncapped encode is what OOM'd a 16GB card mid-reindex.
@@ -242,8 +221,13 @@ class VaultManager:
                     metadata={"hnsw:space": "cosine"},
                 )
             except Exception as e:
-                logger.error("ChromaDB/BGE init failed: %s — vault will retry on next call", e)
+                # Guardado para o heartbeat: sem isto o servidor dizia "healthy"
+                # com a busca fora do ar, e o erro so existia no log.
+                self.init_error = str(e)
+                logger.error("ChromaDB/BGE init failed: %s; vault will retry on next call",
+                             e, exc_info=True)
                 return  # do NOT set _initialized; leave it False so _ensure_ready() retries
+            self.init_error = None
             # Taken after the open: a write landing mid-open shows up next call.
             self._disk_state = self._read_disk_state()
             self._initialized = True  # only reached on successful init
@@ -937,7 +921,7 @@ class VaultManager:
             # ChromaDB — silently collapsing the search index on each reindex.
             # (0.5.0 used rglob here; v6.0/6.1 regressed it to glob.)
             for f in folder_path.rglob("*.md"):
-                rel = str(f.relative_to(self.cfg.vault))
+                rel = f.relative_to(self.cfg.vault).as_posix()
                 on_disk.add(rel)
                 mtime = f.stat().st_mtime
                 if not force and abs(state.get(rel, 0) - mtime) < 0.001:
@@ -1001,7 +985,11 @@ class VaultManager:
                     if not base or (PurePosixPath(base).is_absolute()
                                     or PureWindowsPath(base).is_absolute()):
                         continue
-                    if base in on_disk or (self.cfg.vault / base).exists():
+                    if base in on_disk:
+                        continue
+                    # Ate a v0.14.0 o Windows gravava o id com "\"; o mesmo arquivo
+                    # hoje tem id com "/". O antigo duplicaria a busca, embora exista.
+                    if "\\" not in base and (self.cfg.vault / base).exists():
                         continue
                     orphans.append(i)
                     orphan_bases.add(base)
@@ -1079,7 +1067,7 @@ class VaultManager:
         except Exception as e:
             logger.warning("Could not read frontmatter from %s: %s", f.name, e)
         return {"title": title, "date": date,
-                "path": str(f.relative_to(self.cfg.vault)), "size_bytes": size}
+                "path": f.relative_to(self.cfg.vault).as_posix(), "size_bytes": size}
 
     def list_directories(self) -> list[dict]:
         """Every directory under a configured folder that holds notes.
@@ -1097,7 +1085,7 @@ class VaultManager:
                 continue
             seen: dict[str, int] = {}
             for f in root.rglob("*.md"):
-                rel = str(f.parent.relative_to(self.cfg.vault))
+                rel = f.parent.relative_to(self.cfg.vault).as_posix()
                 seen[rel] = seen.get(rel, 0) + 1
             for rel in sorted(seen):
                 out.append({"path": rel,
@@ -1146,7 +1134,7 @@ class VaultManager:
                 continue
             for f in root.rglob("*.md"):
                 stem = f.stem.lower()
-                rel = str(f.relative_to(self.cfg.vault))
+                rel = f.relative_to(self.cfg.vault).as_posix()
                 if stem == q:
                     rank = 0
                 elif stem.startswith(q):
@@ -1228,7 +1216,7 @@ class VaultManager:
         for link in _countable_wikilinks(own_text):
             hit = by_stem.get(link.strip().lower())
             outbound.append({"target": link.strip(),
-                             "path": str(hit.relative_to(self.cfg.vault)) if hit else None,
+                             "path": hit.relative_to(self.cfg.vault).as_posix() if hit else None,
                              "broken": hit is None})
 
         # Iterate distinct files, not by_stem keys: an aliased note appears under
@@ -1314,7 +1302,7 @@ class VaultManager:
             source_content = f.read_text(encoding="utf-8")
         except Exception as e:
             return [{"error": f"Could not read note: {note_name} — {e}"}]
-        source_path = str(f.relative_to(self.cfg.vault))
+        source_path = f.relative_to(self.cfg.vault).as_posix()
         hits = self.search(source_content[:1000], limit=limit + 1)
         return [h for h in hits if h.get("path") != source_path and h.get("similarity", 0) >= threshold]
 
@@ -1330,7 +1318,7 @@ class VaultManager:
             stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             updated = existing + f"\n\n---\n*Updated {stamp}*\n\n{append_content}"
             f.write_text(updated, encoding="utf-8")
-            rel = str(f.relative_to(self.cfg.vault))
+            rel = f.relative_to(self.cfg.vault).as_posix()
             fm = self._parse_frontmatter(updated)
             title = fm.get("title") or f.name[:-3]
             self.index_note(updated, {"title": title, "path": rel, "folder": folder})
@@ -1435,7 +1423,7 @@ class VaultManager:
                 resolvable.update(link_names_for_stem(note_stem))
                 resolvable.update(a.lower() for a in frontmatter_aliases(content))
                 notes.append({"stem": note_stem, "folder": folder, "content": content,
-                              "rel": str(f.relative_to(self.cfg.vault))})
+                              "rel": f.relative_to(self.cfg.vault).as_posix()})
 
         # Obsidian resolves a wikilink against every note in the vault, not just
         # the folders delegation-core manages. Notes do live outside them —
@@ -1456,7 +1444,13 @@ class VaultManager:
         # apontam para algo que search_vault(scope='external') acha. Saem em
         # balde proprio, como os marcadores de pasta, para a contagem dizer
         # de que tipo e cada link em vez de esconder a diferenca.
-        ingested = ingested_link_stems()
+        try:
+            registro = _load_registry_for_links()
+        except Exception:
+            # O registro de OUTRO subsistema corrompido nao derruba a checagem:
+            # sem ele, link para fonte ingerida volta a contar como quebrado.
+            registro = {}
+        ingested = ingested_link_stems(registro)
         total = needs_repair = truncated = orphans = broken_links = 0
         malformed_frontmatter = 0
         malformed_notes: list[dict] = []
@@ -1705,7 +1699,7 @@ class VaultManager:
                         q = 0.0
                     if nr or (q is not None and q < th):
                         results.append({
-                            "path": str(f.relative_to(self.cfg.vault)),
+                            "path": f.relative_to(self.cfg.vault).as_posix(),
                             "content": content,
                             "quality_score": q if q is not None else 0.0,
                         })

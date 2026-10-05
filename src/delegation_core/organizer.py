@@ -46,7 +46,7 @@ _PASTA_DE_TOCOS = "Reference"
 
 logger = logging.getLogger("organizer")
 
-# ── merge opt-out (ported forward from the 0.1.0 SAAD hardening) ───────────────
+# ── merge opt-out (ported forward from the 0.1.0 hardening of field deployment A) ───────────────
 # The v5.1 refactor kept automatic size-based merge suppression but dropped the
 # ability for a specific source to forbid being merged into an existing note.
 # Restored here, honoring both mechanisms:
@@ -351,7 +351,7 @@ async def run(engine, vault_manager) -> dict:
                 corpo = ensure_aliases(
                     raw_text, [clean_display(f"{today_str}-{safe}"), f.stem])
                 caminho.write_text(corpo, encoding="utf-8")
-                rel_toco = str(caminho.relative_to(cfg.vault))
+                rel_toco = caminho.relative_to(cfg.vault).as_posix()
                 vault_manager.index_note(
                     corpo, {"title": f.stem, "path": rel_toco, "folder": folder})
                 results.setdefault("stubs", []).append(
@@ -433,7 +433,7 @@ async def run(engine, vault_manager) -> dict:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest = unique_note_path(dest)
                 dest.write_text(final, encoding="utf-8")
-                rel = str(dest.relative_to(cfg.vault))
+                rel = dest.relative_to(cfg.vault).as_posix()
                 vault_manager.index_note(final, {"title": f.stem, "path": rel, "folder": folder})
                 results["classified"].append(f"{f.name} → {rel}")
                 if links:
@@ -526,7 +526,7 @@ async def _process_sections(
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest = unique_note_path(dest)
                 dest.write_text(final, encoding="utf-8")
-                rel = str(dest.relative_to(cfg.vault))
+                rel = dest.relative_to(cfg.vault).as_posix()
                 vault_manager.index_note(final, {"title": title, "path": rel, "folder": folder})
                 results["classified"].append(f"{src.name}[{title}] → {rel}")
                 if links:

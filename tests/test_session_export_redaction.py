@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 RAIZ = Path(__file__).resolve().parent.parent
-HOOK = RAIZ / "hooks" / "session_export.py"
+HOOK = RAIZ / "src" / "delegation_core" / "hooks" / "session_export.py"
 
 
 @pytest.fixture(scope="module")

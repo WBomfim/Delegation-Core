@@ -92,7 +92,7 @@ def _windows_run_command() -> str:
 def systemd_unit_text() -> str:
     return f"""[Unit]
 Description=delegation-core MCP daemon
-Documentation=https://github.com/Grimstone-Solutions/delegation-core
+Documentation=https://github.com/AnonJoey/Delegation-Core-Office
 After=network.target
 # The daemon loads BGE onto the GPU at startup, so a crash loop would thrash it.
 # These are [Unit] keys, not [Service] ones — systemd-analyze verify rejects them
@@ -331,11 +331,17 @@ def stop(timeout: int = STOP_TIMEOUT_SEC) -> dict:
         code, out = _run(["schtasks", "/End", "/TN", SERVICE_NAME], timeout=timeout)
         if code == 0:
             return {"platform": system, "action": "stop", "status": "stopped", "detail": out}
-        # No scheduled task: the Startup-folder fallback leaves no handle to end,
-        # so say that rather than reporting a failure the caller cannot act on.
+        if not (WIN_STARTUP_CMD.exists() or WIN_STARTUP_VBS.exists()):
+            return {"platform": system, "action": "stop", "status": "failed", "detail": out}
+        # Startup-folder install: no task to end, so end the process itself.
+        # This branch used to answer "not_installed" and leave the daemon up,
+        # which made `update` unable to restart it or replace its files; the
+        # operator then started it by hand, and on a Windows machine on
+        # 2026-10-02 that meant the global Python from PATH, not the venv.
+        encerrados = _parar_processos_do_daemon(timeout)
         return {"platform": system, "action": "stop",
-                "status": "not_installed" if (WIN_STARTUP_CMD.exists() or WIN_STARTUP_VBS.exists()) else "failed",
-                "detail": out}
+                "status": "stopped" if encerrados else "not_running",
+                "detail": f"{encerrados} daemon process(es) ended (Startup launcher install)"}
 
     return {"platform": system, "action": "stop", "status": "unsupported", "detail": ""}
 
@@ -364,10 +370,66 @@ def start() -> dict:
 
     if system == "Windows":
         code, out = _run(["schtasks", "/Run", "/TN", SERVICE_NAME])
+        if code != 0 and WIN_STARTUP_CMD.exists():
+            # The launcher is what the installer wrote with the venv's own
+            # interpreter, so starting through it is what keeps the right Python.
+            _abrir_launcher(WIN_STARTUP_CMD)
+            return {"platform": system, "action": "start", "status": "started",
+                    "detail": f"started via {WIN_STARTUP_CMD.name} (Startup launcher install)"}
         return {"platform": system, "action": "start",
                 "status": "started" if code == 0 else "failed", "detail": out}
 
     return {"platform": system, "action": "start", "status": "unsupported", "detail": ""}
+
+
+def _processos_candidatos():
+    import psutil
+    return list(psutil.process_iter(["cmdline"]))
+
+
+def _e_o_daemon(cmdline: list[str]) -> bool:
+    """`python -m delegation_core run` ou o console script `delegation-core run`,
+    com qualquer interpretador: o processo errado do incidente era o Python global."""
+    partes = [str(c).lower() for c in (cmdline or [])]
+    if "run" not in partes:
+        return False
+    if "-m" in partes and "delegation_core" in partes:
+        return True
+    return any(Path(c).stem == SERVICE_NAME for c in partes[:1])
+
+
+def _esperar_fim(procs, timeout: float):
+    import psutil
+    _, vivos = psutil.wait_procs(procs, timeout=timeout)
+    return vivos
+
+
+def _parar_processos_do_daemon(timeout: float) -> int:
+    import os
+    alvos = []
+    for p in _processos_candidatos():
+        try:
+            if p.pid != os.getpid() and _e_o_daemon(p.cmdline()):
+                alvos.append(p)
+        except Exception:
+            continue
+    for p in alvos:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    for p in _esperar_fim(alvos, timeout) if alvos else []:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    return len(alvos)
+
+
+def _abrir_launcher(caminho: Path) -> None:
+    """Executa o .cmd da pasta Startup desacoplado, como o logon faria."""
+    subprocess.Popen(["cmd", "/c", "start", "", str(caminho)],
+                     close_fds=True, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
 
 
 def restart(timeout: int = STOP_TIMEOUT_SEC) -> dict:

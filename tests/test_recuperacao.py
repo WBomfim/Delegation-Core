@@ -215,7 +215,7 @@ def test_novo_caminho_explicito_vence(tmp_path):
 
 
 @pytest.mark.parametrize("caminho,esperado", [
-    ("/Users/saad/Library/CloudStorage/OneDrive-Soteria/Business_Vault/.chroma_bge", True),
+    ("/Users/usuario/Library/CloudStorage/OneDrive-Empresa/Business_Vault/.chroma_bge", True),
     ("/Users/x/Library/Mobile Documents/com~apple~CloudDocs/vault/.chroma_bge", True),
     ("/home/x/Dropbox/vault/.chroma_bge", True),
     ("C:/Users/x/OneDrive - Empresa/vault/.chroma_bge", True),

@@ -1,120 +1,169 @@
 # Mapa do delegation-core
 
-_Medido em 2026-09-03 contra a árvore de trabalho da branch
-`otimizacao/overnight-0903`. Todo número aqui foi contado por script na hora,
-nenhum foi copiado de documento anterior. Se você está lendo isto muito depois,
-rode os comandos da última seção em vez de acreditar nos números._
+Estrutura do sistema: o que cada parte faz, como as partes se ligam e que
+regras os testes defendem. **Este arquivo não carrega números** (linhas,
+testes, ferramentas, linhas do índice): número que muda sozinho envelhece na
+prosa sem que nada falhe. Para números, rode os comandos da última seção ou
+pergunte ao servidor: `capabilities()` e `heartbeat()`.
 
 ## O que é
 
-Um servidor MCP local sobre um vault de markdown, com índice vetorial
-(ChromaDB + BGE-m3), um modelo local opcional (llama.cpp), um pipeline de grafo
-de código vendorizado do Graphify, um CLI completo, e um dashboard Tauri.
+Um servidor MCP local sobre um vault de Markdown, com índice vetorial
+(ChromaDB + BGE-m3), um modelo local opcional (llama.cpp, ou um servidor
+compatível como o `mlx_lm.server`), um pipeline de grafo de código vendorizado
+do Graphify, uma CLI completa e um dashboard Tauri.
 
-Serve **54 ferramentas MCP**. Não confie nesse número: chame `capabilities()`,
-que pergunta ao servidor em execução. `tests/test_docs_not_stale.py` falha se
-esta linha divergir de `server.py`.
+## Topologia em execução
 
-## Tamanho, por área
+```mermaid
+flowchart LR
+  subgraph Clientes
+    CC[Claude Code]
+    CD[Claude Desktop]
+    CX[Codex]
+    AG[Antigravity]
+    DB[Dashboard Tauri]
+  end
+  CD -->|stdio: delegation-core mcp-stdio| SB[stdio_bridge.py]
+  CC -->|HTTP + token| S
+  CX -->|HTTP + token| S
+  AG -->|HTTP + token| S
+  SB -->|HTTP + token| S
+  DB -->|JSON, dashboard_port| API
+  DB -.reserva, se o daemon não responder.-> SC[dashboard_api próprio]
 
-| Área | Arquivos | Linhas | De quem é |
-|---|---:|---:|---|
-| `src/delegation_core/` sem `graph/` | 54 | 18.981 | **nosso** |
-| `src/delegation_core/graph/` | 56 | 32.965 | vendorizado do Graphify |
-| `tests/` | 75 | 13.710 | **nosso** |
-| `hooks/` | 2 | 579 | **nosso** |
-| `skills/` | 81 | 18.156 | vendorizado da Anthropic |
-| `docs/` | 5 | 670 | ferramentas de bancada |
+  subgraph Daemon[Daemon: delegation-core run, serviço por SO]
+    S[server.py: ferramentas MCP]
+    API[dashboard_api.py: serve_in_process]
+    LQ[localqueue.py] --> LW[localworker.py]
+  end
 
-O código que é de fato deste projeto são **~33.000 linhas** entre núcleo, testes
-e hooks. As outras ~51.000 são vendorizadas e mudá-las custa o re-vendor, o que
-é uma decisão registrada no `HANDOFF.md`, não uma omissão.
+  S --> V[vault.py] --> CH[(ChromaDB)]
+  V --> VA[(vault Markdown)]
+  S --> E[engine.py] --> L[(llama-server, sob demanda)]
+  LW --> E
+  S --> O[organizer.py]
+  S --> I[ingest.py]
+  S --> GB[graphbridge.py] --> G[graph/ vendorizado]
+```
+
+Uma instalação roda **um** daemon (`delegation-core run`), registrado como
+serviço de usuário (systemd, launchd ou tarefa/atalho no Windows). Ele serve o
+MCP em `server_port` e a API do dashboard em `dashboard_port`, no mesmo
+processo. A CLI que escreve no índice entrega o trabalho ao daemon
+(`daemon.py`) em vez de abrir um segundo escritor.
 
 ## O núcleo, por responsabilidade
 
-**O índice e o vault**
-- `vault.py` (1.664) — ciclo de vida do ChromaDB, busca, indexação, reindex,
-  saúde do vault. É o módulo mais denso e o segundo mais importado.
-- `notes.py` (408) — nomes de arquivo, caminhos, frontmatter. Funções puras,
-  sem ChromaDB. Separado de `vault.py` em 03/09 porque nove módulos importavam
-  essas regras e arrastavam junto o módulo que abre o índice.
-- `embeddings.py` (484) — BGE, perfis de modelo, chunking, fallback para CPU.
-- `linker.py` (331) — wikilinks, aliases, backlinks.
-- `ingest.py` (395) — indexar pasta externa sem mover arquivo.
-- `extractor.py` (292) — PDF, docx, xlsx, pptx, html, csv para texto.
+**Entrada e transporte**
+- `server.py`: as ferramentas MCP e `run_server()`.
+- `cli.py`: a linha de comando.
+- `daemon.py`: a metade cliente do HTTP, usada pela CLI.
+- `auth.py`: token bearer obrigatório no loopback.
+- `client_tracking.py`: quem está conectado, por sessão MCP.
+- `stdio_bridge.py`: ponte stdio para o Claude Desktop.
+- `capabilities.py`: o relatório gerado do que o servidor faz.
+- `dashboard_api.py`: a API JSON do dashboard.
 
-**O modelo local**
-- `engine.py` (~540) — o único dono da conexão com o llama.cpp. Fila,
-  orçamento por tarefa, arbitragem de GPU, retry. Desde 03/09 há teste que
-  falha se qualquer módulo fora daqui abrir `/v1/chat/completions`.
-- `gpu.py` (~210) — árbitro de exclusão mútua entre BGE e llama. Nesta máquina
-  os dois não cabem nos 16 GB da placa.
-- `localqueue.py` (~250) / `localworker.py` (163) — fila em disco de tarefas
-  para o modelo local, drenada por um worker só.
+**Vault, índice e notas**
+- `vault.py`: o `VaultManager`. Abre o ChromaDB, indexa, busca, reindexa e mede
+  a saúde do vault.
+- `notes.py`: nomes, caminhos e frontmatter. Só biblioteca padrão; é a camada
+  mais baixa e não importa nenhum módulo do pacote além de `locking`.
+- `notewriter.py`: o caminho único de escrita de nota.
+- `embeddings.py`: fábrica do BGE e fatiamento de texto.
+- `linker.py`: wikilinks e relink aditivo.
+- `index_lock.py` e `locking.py`: trava de reabertura do índice e trava entre
+  processos.
+- `recuperacao.py`: índice que derruba quem o abre vai para quarentena e é
+  reconstruído das fontes.
+- `repair.py`: acha e conserta nota sintetizada a partir de nada.
 
-**O servidor e as superfícies**
-- `server.py` (1.497) — as 54 ferramentas MCP. Depende de 10 outros módulos.
-- `daemon.py` (296) — o cliente HTTP que o CLI usa para falar com o daemon.
-- `dashboard_api.py` (1.025) — API do dashboard Tauri. Depende de 9 módulos.
-- `cli.py` (1.437) — o CLI.
+**Manutenção do inbox**
+- `organizer.py` orquestra: `extractor.py` (formatos para texto, incluindo
+  imagem por EXIF e OCR via `imagens/`), `classifier.py`, `splitter.py`,
+  `synthesizer.py`, `merger.py`, `sidecar.py` e `junk.py`.
 
-**A manutenção do vault**
-- `organizer.py` (553) — classifica o inbox, funde duplicatas, religa.
-  Depende de 9 módulos, todos da própria manutenção.
-- `classifier.py`, `merger.py`, `splitter.py`, `junk.py`, `synthesizer.py`.
+**Geração local**
+- `engine.py`: o `DelegationEngine`, que sobe o motor e roteia entre local,
+  agente e híbrido.
+- `localqueue.py` e `localworker.py`: a fila de tarefas para o modelo local,
+  com um consumidor.
+- `gpu.py`: exclusão mútua entre BGE e modelo local na mesma placa. Só entra em
+  jogo para quem está na GPU: `embed_device` e `llama_device` dizem onde cada
+  um roda, e o `doctor` avisa quando os dois vão disputar a placa.
+- `jobs.py`: jobs em segundo plano com tempo típico pelo histórico.
+- `tracker.py`: processos persistentes entre sessões.
 
-**Estado que atravessa sessões**
-- `tracker.py` (177) — processos em `processes.json`.
-- `jobs.py` (~140) — jobs de background em memória, com histórico de duração
-  em disco.
-- `config.py` (~460) — o `config.json`. É o módulo mais importado do projeto.
+**Ingestão externa e grafos**
+- `ingest.py`: indexa pastas de fora do vault sem mover nada, com registro.
+- `graphbridge.py`: orquestra o pipeline de grafo e escreve os artigos no vault.
+- `graph_hook.py` e `graph_hook_rebuild.py`: hook de git que refaz o grafo.
+- `graph/`: Graphify vendorizado. Mudá-lo custa o re-vendor.
 
-**Grafo de código**
-- `graphbridge.py` (704) — a ponte entre o pipeline vendorizado e o vault.
-- `graph/` — vendorizado. `extract.py` sozinho tem 5.372 linhas.
+**Instalação e operação**
+- `installer.py`, `wizard.py`, `service.py`, `clients.py`, `windows.py`,
+  `doctor.py`, `downloader.py` e `config.py`.
 
-## Acoplamento medido
+**Hooks de sessão do Claude Code** (`hooks/`, dentro do pacote)
+- `entrada.py`: o comando `delegation-core-hook`, um processo por evento. O
+  instalador o registra no `~/.claude/settings.json`.
+- `session_start_brief.py`: resumo do que mudou no vault, no início da sessão.
+- `session_export.py` e `llama_session_stop.py`: no fim da sessão, em sequência,
+  a transcrição com segredos redigidos e a parada do modelo local ocioso.
 
-**Mais importados** (mexer aqui mexe em tudo):
-`config` (12 importadores), `vault` (11), `linker` (7), `periodo` (7),
-`embeddings` (6), `extractor` (4).
+**Fora do pacote**
+- `dashboard/`: a casca Tauri e a interface.
+- `skills/`: skills da Anthropic distribuídas junto.
 
-**Que mais sabem** (candidatos a quebra futura):
-`server` (10 dependências), `dashboard_api` (9), `organizer` (9).
+## Camadas
 
-`server` e `dashboard_api` dependem quase do mesmo conjunto, o que é esperado:
-são duas superfícies sobre o mesmo núcleo. `organizer` depende de nove módulos
-que são todos da própria manutenção do vault, o que é coesão e não dispersão.
+Nenhum módulo do núcleo depende, nem por import dentro de função, de um módulo
+que dependa dele. `tests/test_sem_ciclos_de_import.py` falha se um ciclo
+voltar. Na prática:
+
+- `notes` é a base: só importa `locking`. `config` só importa `embeddings`,
+  e dentro de função.
+- `vault` fica acima de `notes`, `embeddings`, `linker` e `recuperacao`; quem
+  precisa do registro de ingestão (`ingest`) é o `vault`, não o `notes`.
+- `doctor` olha para os outros módulos; só a `cli` e a `recuperacao` (que usa
+  a sonda do índice) olham para ele.
+- `cli` e `server` são as duas superfícies no topo.
 
 ## Invariantes que o código defende com teste
 
 - Nenhum teste escreve em `~/.delegation_core` (`tests/conftest.py`, autouse).
   Existe porque um teste sobrescreveu o `config.json` real e derrubou o daemon.
+- Nenhum ciclo de import no núcleo (`test_sem_ciclos_de_import.py`).
+- Análise estática limpa no núcleo, hooks incluídos, com pyflakes e erro de sintaxe
+  (`test_analise_estatica.py`). Pegaria o `{_lang}` que deixou o `compress`
+  local quebrado por um mês.
+- Nenhuma função interna (nome com `_`) publicada como ferramenta MCP
+  (`test_ferramentas_publicas.py`).
 - `__version__` e `pyproject.toml` concordam, e não há terceira cópia.
-- A prosa não carrega contagem de testes; a contagem de ferramentas MCP é
-  verificada; as assinaturas que o `AGENT_GUIDE` declara batem com `server.py`.
+- A prosa não carrega contagem de testes; a contagem de ferramentas MCP, onde
+  aparece, é conferida contra `server.py`, inclusive nesta pasta `docs/`.
 - `notes.py` não pode voltar a importar `chromadb`, `embeddings`, `gpu` nem
-  `vault`.
-- Nenhum módulo fora do `engine` abre `/v1/chat/completions`.
+  `vault`, e o `vault.py` tem teto de tamanho.
+- Nenhum módulo fora do `engine` abre `/v1/chat/completions`
+  (`test_motor_unico.py`).
 - Toda nota arquivada por `graph_build` é carimbada em `.chroma_index.json`.
 
-## Como reproduzir estes números
+## Como medir
 
 ```bash
-cd /home/joey/Projects/delegation-core
+cd ~/Projects/delegation-core
 
-# Testes
-~/.delegation_core/venv/bin/python -m pytest -q
+# Testes (pip install -e .[dev] traz o ruff da análise estática)
+python -m pytest -q
 
-# Ferramentas MCP
-grep -c '@mcp.tool()' src/delegation_core/server.py
+# Ferramentas MCP publicadas
+python -c "import asyncio, delegation_core.server as s; print(len(asyncio.run(s.mcp.list_tools())))"
 
-# Tamanho por área
-python3 ~/.delegation_core/overnight-0903/mapa.py . --only src --json /tmp/m.json
+# Tamanho do núcleo
+wc -l src/delegation_core/*.py
 
-# Acoplamento e código morto
-python3 ~/.delegation_core/overnight-0903/morto.py
-
-# Saúde do vault (não escreva script para isso)
-# heartbeat(force=true) e vault_health_detail() pelo MCP
+# Grafo de código: graph_build_bg pelo MCP, depois graph_report e graph_affected
+# Saúde do servidor e do vault: capabilities(), heartbeat(force=true) e
+# vault_health_detail() pelo MCP; delegation-core doctor pela linha de comando
 ```

@@ -1,0 +1,56 @@
+name: Testes
+
+# A suite Python roda em todo push e PR para o master, nas tres plataformas que
+# o instalador suporta. Ate a v0.14.0 o unico workflow era o do dashboard, e um
+# nome indefinido no `compress` ficou um mes em producao com os testes verdes
+# na maquina de quem fez o commit.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suite:
+    name: suite (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12"]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # A suite usa dubles para BGE, ChromaDB e o modelo local, mas importa os
+      # pacotes. O torch de CPU evita baixar o pacote CUDA, que e varias vezes
+      # maior e inutil num runner sem GPU.
+      - name: Dependencias
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "$RUNNER_OS" != "macOS" ]; then
+            pip install torch --index-url https://download.pytorch.org/whl/cpu
+          fi
+          pip install -e ".[dev,graph]"
+
+      - name: Analise estatica
+        run: python -m ruff check --no-cache --select F,E9 --exclude src/delegation_core/graph src/
+
+      - name: Suite
+        run: python -m pytest -q -p no:cacheprovider

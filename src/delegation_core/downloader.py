@@ -6,7 +6,6 @@ All downloads show a live progress bar via rich.
 import os
 import platform
 import shutil
-import sys
 import tarfile
 import tempfile
 import zipfile

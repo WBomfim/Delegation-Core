@@ -2,7 +2,7 @@
 classifier.py — LLM-based inbox routing.
 
 v0.2: uses engine.budget('classify') so the 8-token cap is enforced automatically
-on CPU hardware. FOLDER_HINTS (SAAD) injected into the prompt. Fallback goes to
+on CPU hardware. FOLDER_HINTS (field deployment A) injected into the prompt. Fallback goes to
 'reference' (neutral), never to folders[0] which may be semantically loaded.
 """
 

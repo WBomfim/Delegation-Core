@@ -10,19 +10,9 @@ This is a raw-transcript backup. It is NOT a replacement for
 export_session() (the MCP tool Claude calls to write a curated summary).
 Both files are useful: this one is the full record, the MCP tool is the digest.
 
-Requires only stdlib — runs with system Python 3.11+, no venv needed.
-
-Hook registration (add to ~/.claude/settings.json):
-{
-  "hooks": {
-    "SessionEnd": [
-      {
-        "matcher": "*",
-        "hooks": [{ "type": "command", "command": "python3 /path/to/hooks/session_export.py" }]
-      }
-    ]
-  }
-}
+Only stdlib, so the hook never pays for the rest of the package's imports.
+Runs as part of `delegation-core-hook session-end` (see entrada.py), which the
+installer registers in ~/.claude/settings.json.
 """
 
 import json
@@ -44,9 +34,8 @@ def _yaml_quote_scalar(value: str) -> str:
     An unquoted scalar containing ": " (colon-space) is ambiguous/invalid YAML
     (Obsidian and any strict frontmatter parser will choke on it) — quote
     unconditionally so titles are safe regardless of content. Duplicated from
-    delegation_core.vault.yaml_quote_scalar rather than imported: this hook is
-    stdlib-only by design (runs with system python3, no venv), so it can't
-    depend on the package.
+    delegation_core.notes.yaml_quote_scalar rather than imported: the hooks
+    stay stdlib-only, so a session end never pays for the package's imports.
     """
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
@@ -239,6 +228,29 @@ def _redigir(texto):
     return texto, total
 
 
+_TAG = re.compile(r"<[^>]{1,80}>")
+
+
+def _topic(messages: list[dict]) -> str:
+    """The first real line a person typed, without Claude Code's markup.
+
+    Measured 27/09/2026: 40 of 75 raw transcripts were titled
+    "<local-command-caveat>Caveat: The messages below...", the tag Claude Code
+    puts before a local command, because that was the first "user" message.
+    """
+    for m in messages:
+        if m.get("role") != "user":
+            continue
+        texto = (m.get("text") or "").strip()
+        if not texto or texto.startswith("<"):
+            continue
+        linha = next((l.strip() for l in texto.splitlines() if l.strip()), "")
+        linha = re.sub(r"\s+", " ", _TAG.sub(" ", linha)).strip()
+        if linha:
+            return linha[:60]
+    return "Session"
+
+
 def _format_markdown(
     messages: list[dict], session_id: str, cwd: str, segredos_removidos: int = 0,
 ) -> str:
@@ -246,10 +258,7 @@ def _format_markdown(
     time_str = datetime.now().strftime("%H:%M")
     short_id = session_id[:8]
 
-    # Build a rough title from the first user message
-    first_user = next((m for m in messages if m["role"] == "user"), None)
-    topic = first_user["text"][:80].split("\n")[0].strip() if first_user else "Session"
-    topic = topic[:60]
+    topic = _topic(messages)
 
     lines = [
         "---",
@@ -292,16 +301,21 @@ def _format_markdown(
     return "\n".join(lines)
 
 
-def main():
-    raw = sys.stdin.read().strip()
+def main(raw: str | None = None) -> int:
+    """Exporta a transcricao da sessao que terminou. `raw` e o JSON do hook;
+    sem ele, le da entrada padrao. Devolve 0 sempre: o fim da sessao nunca
+    pode falhar por causa do export."""
+    if raw is None:
+        raw = sys.stdin.read()
+    raw = raw.strip()
     if not raw:
-        sys.exit(0)
+        return 0
 
     try:
         hook_data = json.loads(raw)
     except json.JSONDecodeError as e:
         sys.stderr.write(f"session_export: bad hook JSON: {e}\n")
-        sys.exit(0)
+        return 0
 
     transcript_path = hook_data.get("transcript_path", "")
     session_id = hook_data.get("session_id", "unknown")
@@ -309,13 +323,13 @@ def main():
 
     if not transcript_path or not Path(transcript_path).exists():
         sys.stderr.write(f"session_export: no transcript at '{transcript_path}'\n")
-        sys.exit(0)
+        return 0
 
     config = _load_config()
     vault_path = config.get("vault_path", "")
     if not vault_path:
         sys.stderr.write("session_export: delegation-core not configured — skipping export\n")
-        sys.exit(0)
+        return 0
 
     vault = Path(vault_path).expanduser()
     sessions_dir = _resolve_sessions_dir(vault, config)
@@ -324,12 +338,12 @@ def main():
         sessions_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         sys.stderr.write(f"session_export: could not create {sessions_dir.name}/ dir: {e}\n")
-        sys.exit(0)
+        return 0
 
     messages = _parse_transcript(transcript_path)
     if not messages:
         sys.stderr.write("session_export: no messages found in transcript — skipping\n")
-        sys.exit(0)
+        return 0
 
     short_id = session_id[:8]
     # The session id alone — no date prefix. The name has to be STABLE across
@@ -376,11 +390,8 @@ def main():
         )
     except Exception as e:
         sys.stderr.write(f"session_export: write failed: {e}\n")
-        sys.exit(0)
+        return 0
 
     if _trigger_reindex():
         sys.stderr.write("session_export: triggered background reindex\n")
-
-
-if __name__ == "__main__":
-    main()
+    return 0

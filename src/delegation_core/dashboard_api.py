@@ -83,6 +83,10 @@ from . import notewriter as _notewriter
 
 logger = logging.getLogger("dashboard_api")
 
+#: Valores que a rota de config aceita para `llama_device` (iguais a engine.LLAMA_DEVICES,
+#: repetidos aqui para a API nao importar o engine).
+DISPOSITIVOS_DO_MODELO = ("auto", "gpu", "cpu")
+
 _cfg = None     # set once in run() or serve_in_process() — Config
 _vault = None   # set once in run() — VaultManager, shared across every request.
                 # A fresh VaultManager per request (the original version of this
@@ -194,7 +198,7 @@ def _build_vault_graph(cfg, include_generated: bool = False,
                         if line.startswith("title:"):
                             title = yaml_unquote_scalar(line.split(":", 1)[1])
                             break
-            rel = str(f.relative_to(vault))
+            rel = f.relative_to(vault).as_posix()
             if not include_generated and VaultManager.classify_path(rel)[0] == "generated":
                 generated_skipped += 1
                 continue
@@ -673,6 +677,16 @@ class _Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError):
                 pass
 
+        if "llama_device" in data:
+            valor = str(data["llama_device"]).strip().lower()
+            if valor in DISPOSITIVOS_DO_MODELO:
+                _cfg.llama_device = valor
+
+        if "embed_device" in data:
+            valor = str(data["embed_device"]).strip().lower()
+            if valor in ("auto", "cpu", "cuda", "mps"):
+                _cfg.embed_device = valor
+
         if "llama_ngl" in data:
             try:
                 _cfg.llama_ngl = int(data["llama_ngl"])
@@ -1014,7 +1028,6 @@ def serve_in_process(cfg, vault, tracker, host: str = "127.0.0.1",
 
 
 def run(port: int = 0, host: str = "127.0.0.1", parent_pid: int | None = None) -> None:
-    import os
     from .config import Config
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",

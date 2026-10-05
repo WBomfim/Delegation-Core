@@ -34,21 +34,10 @@ writers against the index the daemon holds open. Since v0.11 `maintain` and
 in-process when none is listening — see src/delegation_core/daemon.py. Nothing
 about this hook changes; what changed is what those commands do when they land.
 
-Requires only stdlib — runs with system Python 3.11+, no venv needed. The
-maintenance trigger shells out to the venv's delegation-core binary but does
-not import anything from it, so the hook itself stays dependency-free.
-
-Hook registration (add to ~/.claude/settings.json):
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [{ "type": "command", "command": "python3 /path/to/hooks/session_start_brief.py" }]
-      }
-    ]
-  }
-}
+Only stdlib. The maintenance trigger shells out to the venv's delegation-core
+binary but imports nothing from the package. Runs as
+`delegation-core-hook session-start` (see entrada.py), which the installer
+registers in ~/.claude/settings.json.
 """
 
 import json
@@ -330,7 +319,7 @@ def main():
             "any large batch below:"
         )
         for mtime, f in soltas[:MAX_NOTES]:
-            rel = f.relative_to(vault)
+            rel = f.relative_to(vault).as_posix()
             when = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
             lines.append(f"- `{rel}` ({when})")
         if len(soltas) > MAX_NOTES:
@@ -360,6 +349,3 @@ def main():
 
     print("\n".join(lines))
 
-
-if __name__ == "__main__":
-    main()

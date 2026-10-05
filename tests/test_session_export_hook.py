@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-HOOK = Path(__file__).resolve().parents[1] / "hooks" / "session_export.py"
+HOOK = Path(__file__).resolve().parents[1] / "src" / "delegation_core" / "hooks" / "session_export.py"
 
 
 @pytest.fixture(scope="module")
