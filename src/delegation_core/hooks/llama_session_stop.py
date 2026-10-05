@@ -212,4 +212,3 @@ def main(raw: str | None = None) -> int:
 
     log(f"parando llama-server pid={pid} porta={port} sessao={session_id[:8] or '?'}: {stop(pid)}")
     return 0
-
