@@ -1,7 +1,7 @@
 # delegation-core — Deployment Log (multi-implementation)
 
 **Purpose.** delegation-core is not a single linear install. It runs as several
-independent field implementations (SAAD, MAURICIO, …) on different hardware, with
+independent field implementations (named here field deployment A, B, and so on) on different hardware, with
 different local models, prompt languages, and locally-grown hardening. The
 `CHANGELOG.md` describes the *package* lineage (v5 → v5.1) and implicitly assumes
 every install shares that lineage. **It does not.** Some deployments are on
@@ -14,7 +14,7 @@ overwrite another deployment's entry.
 
 ---
 
-## WBomfim deployment — Windows ingestion configuration and startup fixes — 2026-09-24
+## Field deployment D (Windows): ingestion configuration and startup fixes, 2026-09-24
 
 **Host / profile.** Windows local installation using the dedicated
 `.delegation_core` virtual environment. The installed package reports version
@@ -35,16 +35,17 @@ overwrite another deployment's entry.
 
 **Runtime source transition.** The previous runtime resolved to
 `Delegation-Core-Office` through its installation metadata. It was reinstalled
-from the official `Delegation-Core` checkout on the same day; the active runtime
-now resolves to that checkout. The service was reinstalled and an authenticated
-MCP initialization returned HTTP 200 on `127.0.0.1:8787`.
+the same day from a local checkout of a contributor fork of
+`AnonJoey/Delegation-Core-Office`; the active runtime now resolves to that
+checkout. The service was reinstalled and an authenticated MCP initialization
+returned HTTP 200 on `127.0.0.1:8787`.
 
 **Rollback.** Reinstall the previously validated checkout and restart the
 service. No vault migration or index rebuild is required.
 
 ---
 
-## SAAD deployment — v6 linking redesign — 2026-07-03
+## Field deployment A: v6 linking redesign, 2026-07-03
 
 **Trigger.** Post-v5.1 testing of `relink_folder` on this vault (442 notes). A
 dry-run instead of a live call exposed that the tool was unsafe.
@@ -127,13 +128,13 @@ body-content artifacts (imported slugs/prose), left as content by design.
 
 ---
 
-## SAAD deployment — upgrade to v5.1 — 2026-07-03
+## Field deployment A: upgrade to v5.1, 2026-07-03
 
 **Host / profile.** macOS, Intel i9-9880H, CPU-only (no GPU/Metal). Local model
 Llama-3.2-1B-Instruct-Q4_K_M @ llama.cpp port 8181 (launchd `com.delegation-core.llama`).
-Sole MCP across Claude Code + Claude Desktop. Vault: `/Users/saad/Business_Vault`
+Sole MCP across Claude Code + Claude Desktop. Vault: `/Users/<user>/Business_Vault`
 (440 notes). Install mode: editable (`pip install -e .`) at
-`/Users/saad/Saad/Bank/Claude/delegation_core`.
+`/Users/<user>/.../delegation_core`.
 
 **Starting point — NOT v5.** This box was on a divergent **`0.1.0`** carrying local
 "hardening round 2" (documented in `DIVERGENCE.md`). It never went through v5, so
@@ -143,12 +144,12 @@ refactor (monolith → 11 modules: junk, merger, linker, synthesizer, splitter,
 classifier, embeddings, ingest, jobs, session, sidecar).
 
 **Local hardening — mostly UPSTREAMED (verified in v5.1 code).**
-- `JUNK_STEM_RE` + `~$` Office-lock filter → `junk.py` (credited "SAAD deployment").
+- `JUNK_STEM_RE` + `~$` Office-lock filter → `junk.py` (credited to field deployment A).
 - `FOLDER_HINTS` + neutral `reference/` classifier fallback → `classifier.py`.
 - Merge size-guards (incoming 32KB / target 150KB) → `merger.py`.
 - Filename collision suffixes, full note-path in `results["classified"]` → present.
 - `vault_folder:` routing → **mechanism changed**: moved from inline YAML frontmatter
-  to `<stem>.meta.yaml` **sidecar** files (`sidecar.py`, "MAURICIO deployment").
+  to `<stem>.meta.yaml` **sidecar** files (`sidecar.py`, "field deployment B").
 - ChromaDB telemetry: old env-var + posthog-logger silence (0.1.0 `__init__.py`)
   replaced by `anonymized_telemetry=False` on the client (`vault.py`) — cleaner root
   fix, so the old `__init__.py` hack was intentionally NOT carried forward.

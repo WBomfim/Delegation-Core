@@ -42,6 +42,7 @@ _SEM_ENCODING_POR_NATUREZA = {
     "os.open",          # devolve fd cru, sem camada de texto
     "opener.open",      # urllib
     "z.open", "zf.open",
+    "Image.open",       # PIL: le a imagem em binario, nao ha camada de texto
 }
 
 

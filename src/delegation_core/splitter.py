@@ -192,7 +192,7 @@ def inject_sibling_links(vault_manager, note_paths: list[str], cfg) -> int:
             vault_manager.index_note(updated_content, {
                 "title": stem,
                 "path":  rel,
-                "folder": str(abs_path.parent.relative_to(cfg.vault)),
+                "folder": abs_path.parent.relative_to(cfg.vault).as_posix(),
             })
             updated += 1
         except Exception as e:

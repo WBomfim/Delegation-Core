@@ -38,7 +38,7 @@ def vm(tmp_path, monkeypatch):
     return manager
 
 
-def _touch(vm, content=b"two"):
+def _touch(vm, content=b"two, longer"):
     """Simulate a foreign write: the sqlite file changes size."""
     (vm.cfg.chroma_path / "chroma.sqlite3").write_bytes(content)
 

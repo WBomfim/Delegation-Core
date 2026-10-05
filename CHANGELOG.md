@@ -1,54 +1,68 @@
 # Changelog
 
-All notable changes to the Delegation-Core Office project (v0.1.0 to v0.13.0 / v13) are documented in this file.
+All notable changes to the Delegation-Core Office project (v0.1.0 to v0.15.0) are documented in this file.
 This changelog is derived directly from the canonical versioning recorded across the codebase and vault archives.
 
 ---
 
-## Unreleased
-
-### Added
-
-- **Declarative ingestion configuration**: Added `ingest_sources` and exclusion
-  patterns to configure allow-listed external document sources, per-source
-  settings, and safe exclusions before ingestion.
-- **Ingestion configuration guide**: Documented when and how to configure
-  recurring external sources after the initial setup.
+## Nao lancado
 
 ### Fixed
-
-- **Windows automatic startup**: Recreated the Startup launcher through the
-  virtual environment Python runtime instead of the blocked legacy executable.
-- **Cross-platform service checks**: Made service definition tests select the
-  platform-specific launcher behavior.
-- **Vault index reporting**: Distinguished physical Markdown files, indexed
-  documents, and ChromaDB chunks in startup metrics.
-- **Configuration permission handling**: Saved configuration permissions using
-  a filesystem path compatible with Windows.
-
-### Changed
-
-- **Repository hygiene**: Organized `.gitignore` rules into documented blocks.
+- **`update` rodava os passos finais com o codigo da versao anterior.** O processo do `update` importa os modulos antes do `git pull` e do `pip install`, entao tudo que ele chamava depois vinha da versao velha. No update para a v0.15.0 os hooks de sessao nao foram registrados e tiveram de ser registrados a mao. Agora os passos que vem depois do pip (docs, hooks, servico) rodam num interpretador novo, pelo comando interno `update-finish`. Se o filho falhar, os passos rodam no processo atual como antes, e o passo `finish_in_new_code` do relatorio diz qual dos dois aconteceu. A correcao vale a partir do update seguinte a esta versao: o update que instala esta correcao ainda roda o codigo anterior.
 
 ---
 
-## Unreleased (2026-10-01) - Default MCP port
-
-### Changed
-- The default MCP port is now `8797` instead of `8787`, avoiding a collision with Headroom's commonly used proxy port. Explicit `server_port` values in existing configurations are preserved. Client configuration examples use the new default.
-
-## Unreleased (2026-09-29) - Daemon travado no Mac: reabertura do indice, loop bloqueado e watchdog
+## v0.15.0 (2026-10-03) - CI nas tres plataformas, Windows correto, modelos por dispositivo e hooks no pacote
 
 ### Fixed
+- **Caminho de nota com barra invertida no Windows** (PR 17). `str(p.relative_to(vault))` usa o separador do sistema: o vault gravava o carimbo como `Notes\a.md` e procurava `Notes/a.md`, reindexando a toa, e `create_note` devolvia caminho com barra invertida. Os 30 pontos que viram id, carimbo ou resposta de ferramenta usam `.as_posix()`. Linha antiga com barra invertida no id e varrida como orfa no reindex, para nao duplicar a busca; o primeiro reindex depois da atualizacao reembute o vault uma vez no Windows.
+- **Trava do rebuild de grafo nunca ficava obsoleta no Windows** (PR 17). A vivacidade do PID vem do `psutil` nas tres plataformas; `os.kill(pid, 0)` no Windows encerra o processo em vez de consultar.
+- **BGE na CPU derrubava o modelo local** (PR 19). O vault pedia a placa (`gpu.take("embeddings")`) a cada abertura ou reabertura do indice, mesmo com `embed_device: cpu`, e o pedido parava o llama-server. A reabertura acontece sempre que outro processo escreve no indice. Agora so pede a placa quem vai carregar o BGE na CUDA.
+
+### Added
+- **CI** (PR 17): a suite e a analise estatica rodam em todo push e PR para o `master`, em Linux, Windows e macOS.
+- **`llama_device`** (`auto`, `gpu`, `cpu`), ao lado do `embed_device` (PR 19). `cpu` usa zero camadas na GPU e esconde a placa so do processo do modelo; `gpu` e `auto` nunca herdam um `CUDA_VISIBLE_DEVICES` vazio do daemon. O `heartbeat` mostra `dispositivos`, o `doctor` ganha o check `devices`, e a rota de config do dashboard aceita os dois campos.
+- **`delegation-core-hook`**: os hooks de sessao rodam de dentro do pacote, um processo por evento (`session-start`, `session-end`). O fim de sessao le a entrada uma vez e faz o export e a parada do modelo em sequencia; um passo que falha nao impede o outro. O instalador registra os comandos no `~/.claude/settings.json` (troca os registros antigos, preserva os de terceiros, faz backup) e o uninstall os tira.
+
+### Changed
+- **Hooks nao sao mais copiados** para `~/.delegation_core/hooks/`; as copias antigas sao apagadas depois que o registro novo e gravado. O `doctor` troca `hook_drift` por `hooks`, que confere o registro.
+- **Repositorio sem nomes da equipe** (PR 18): implantacoes viram "field deployment A, B, C, D" em comentarios, docstrings, testes e no DEPLOYMENT_LOG. Incorpora o conteudo do PR 5.
+
+## v0.14.0 (2026-10-03) - Compress local de volta, Windows legivel, imagens no vault e um nucleo sem ciclos
+
+### Fixed
+- **`compress` pelo modelo local falhava em toda chamada desde 03/09** (PR 13). O prompt ainda referenciava `{_lang}`, variavel apagada quando a lingua foi para o system via `with_lang`; a chamada devolvia `Compression failed: name '_lang' is not defined`. Teste reproduz a falha e outro garante a lingua no system.
+- **Windows com DLL bloqueada pelo Smart App Control** (PR 14). A causa real sobe encadeada em vez do "sentence_transformers is not installed" do chromadb; o `heartbeat` sai `degraded` com `embeddings.status = unavailable` e o erro, em vez de `healthy` com a busca fora; sem elevacao (atalho na pasta Inicializar), `stop` encerra o daemon e `start` executa o `.cmd` do venv.
+- **Titulo das transcricoes brutas** vem da primeira fala real, e nao da marcacao `<local-command-caveat>` do Claude Code (40 de 75 tinham esse titulo).
+- **`_bg_maintenance_wrapper` deixou de ser ferramenta MCP.** Era a funcao interna da manutencao em segundo plano; aparecia na lista servida e podia ser chamada fora do job. O servidor publica 55 ferramentas.
+- **O servico gerado apontava `Documentation=` para um repositorio inexistente** (`Grimstone-Solutions/delegation-core`); aponta para `AnonJoey/Delegation-Core-Office`.
+- **Inicializacao no Windows** (PR 3, 29/09): o atalho da pasta Inicializar foi recriado para chamar o Python do venv em vez do executavel bloqueado; os testes de definicao de servico escolhem o comportamento da plataforma; as metricas de inicio distinguem arquivos Markdown, documentos indexados e trechos do ChromaDB; a permissao do `config.json` e gravada por caminho compativel com o Windows.
+- **`engine` encadeia a causa** no `RuntimeError` depois das tentativas (`raise ... from e`).
+
+### Added
+- **Ingestao declarativa** (PR 2, 29/09): `ingest_sources` e padroes de exclusao configuram as fontes externas recorrentes, com ajustes por fonte e exclusoes seguras antes de ingerir; guia em `docs/INGEST_CONFIGURATION.md`.
+- **Imagem vira nota buscavel** (PR 15): data por EXIF, pelo nome da captura ou mtime; dimensoes, camera e GPS; OCR com tesseract. O extrator aceita png, jpg, webp, gif, bmp e tiff. `delegation-core ocr-setup` baixa `por` e `eng` para `~/.delegation_core/tessdata`. Icone pequeno nao passa pelo OCR e imagem sem texto nao e indexada pelo `ingest_folder`.
+- **Analise estatica na suite** (`test_analise_estatica.py`): ruff com pyflakes e erro de sintaxe no nucleo e nos hooks. `ruff` entra no extra `[dev]`.
+- **Testes de estrutura:** nenhum ciclo de import no nucleo, nenhuma funcao interna publicada como ferramenta, so o `engine` chama `/v1/chat/completions`, e a deriva de contagem de ferramentas agora tambem e conferida em `docs/`.
+
+### Changed
+- **Nenhum ciclo de import no nucleo.** Eram cinco, contando import dentro de funcao. `frontmatter_aliases` foi para o `notes` (o `linker` reexporta); `em_pasta_sincronizada` e `caminho_local_do_indice` foram para o `config` (o `recuperacao` reexporta); `ingest` importa `client_from_path` do `notes`; `doctor` acha o `cli.py` sem importa-lo; `ingested_link_stems` recebe o registro, lido pelo `vault`.
+- **`vault.py` encolheu** para caber na guarda de tamanho: `_frontmatter_parses` foi para o `notes`.
+- **Porta padrao do MCP e 8797** (PR 12), por conflito com a porta que o proxy do Headroom costuma usar. Um `server_port` explicito em config existente e preservado, e os exemplos de config de cliente usam o padrao novo.
+- **Documentacao:** `docs/MAPA.md` reescrito sem numeros, `docs/INSTALL_MAC_MLX.md` entra no repositorio, e o `HANDOFF.md` volta a descrever a arquitetura do daemon HTTP.
+
+### Incluido de 2026-09-29 (PRs 7 a 11): daemon travado no Mac, reabertura do indice, loop bloqueado e watchdog
+
+#### Fixed
 - **Reabertura do indice vazava o motor do chromadb.** `clear_system_cache()` so esquecia o System antigo, sem parar; medido no chromadb 1.5.9, cada reabertura deixava 27 threads rodando (234 de 285 no daemon do Mac em 26/09). A reabertura agora chama `Client.close()` (`index_lock.close_chroma_client`).
 - **Reabertura sob consulta em andamento.** Toda chamada que usa `collection` segura uma trava compartilhada; a reabertura espera com a trava exclusiva. Pedida de dentro de uma consulta, ela e adiada para a chamada seguinte, em vez de travar em si mesma.
 - **Ferramentas bloqueantes no event loop.** 17 ferramentas sem `await` viraram `def`, que o fastmcp roda no threadpool; `search_vault` e `heartbeat` levam o trabalho do indice para `asyncio.to_thread`. As que escrevem continuam serializadas entre si.
 - **`status` e `embed-model` abriam o indice ao lado do daemon.** Abrir um PersistentClient, mesmo so para contar, muda o mtime do `chroma.sqlite3`, e o daemon le isso como escrita de outro processo e reabre. Com o daemon no ar eles perguntam a ele; um daemon que aceita conexao e nao responde e reportado em vez de contornado.
 
-### Added
+#### Added
 - **Watchdog do event loop** (`loop_watchdog_sec`, padrao 300, 0 desliga). Um timer do faulthandler, que roda sem o GIL, e rearmado pelo loop; se o loop parar, grava a pilha de todas as threads em `~/.delegation_core/watchdog_tracebacks.log` e sai com codigo 1, que launchd e systemd reiniciam.
 
-### Not in this change
+#### Not in this change
 - O indice ja danificado no Mac (SIGSEGV em `chromadb_rust_bindings` desde 29/09 07:43) precisa de recuperacao propria; esta mudanca previne, nao repara.
 - Troca do modelo padrao para bge-m3 e a lista de pastas do AGENT_GUIDE no Mac: ajustes de configuracao por maquina.
 

@@ -42,18 +42,18 @@ def test_nenhuma_resolucao_carrega_asterisco_literal(bruto):
 
 def test_curinga_vazio_da_o_caminho_sem_o_curinga():
     """O caso concreto: o ponto do arquivo e o proprio inicio do nome."""
-    assert str(_resolve_tsconfig_alias("@lib/.css", ALIASES)).replace("\\\\", "/") == "estilos/.css"
-    assert str(_resolve_tsconfig_alias(".js", ALIASES)).replace("\\\\", "/") == "js/.js"
+    assert str(_resolve_tsconfig_alias("@lib/.css", ALIASES)).replace("\\", "/") == "estilos/.css"
+    assert str(_resolve_tsconfig_alias(".js", ALIASES)).replace("\\", "/") == "js/.js"
 
 
 def test_curinga_normal_continua_substituindo():
-    assert str(_resolve_tsconfig_alias("@app/x", ALIASES)).replace("\\\\", "/") == "src/x"
-    assert str(_resolve_tsconfig_alias("@lib/tema.css", ALIASES)).replace("\\\\", "/") == "estilos/tema.css"
+    assert str(_resolve_tsconfig_alias("@app/x", ALIASES)).replace("\\", "/") == "src/x"
+    assert str(_resolve_tsconfig_alias("@lib/tema.css", ALIASES)).replace("\\", "/") == "estilos/tema.css"
 
 
 def test_alias_exato_nao_e_afetado():
     """O ramo sem curinga nao passa pela substituicao e nao pode mudar."""
-    assert str(_resolve_tsconfig_alias("@exato", ALIASES)).replace("\\\\", "/") == "exato.ts"
+    assert str(_resolve_tsconfig_alias("@exato", ALIASES)).replace("\\", "/") == "exato.ts"
 
 
 def test_prefixo_de_diretorio_nao_e_afetado():
@@ -61,23 +61,23 @@ def test_prefixo_de_diretorio_nao_e_afetado():
     docstring de _match_tsconfig_alias declara e que o prefixo de diretorio so
     entra DEPOIS de todo curinga real."""
     sem_pega_tudo = {k: v for k, v in ALIASES.items() if k not in ("*", "*.js")}
-    assert str(_resolve_tsconfig_alias("@dir/sub", sem_pega_tudo)).replace("\\\\", "/") == "dir/sub"
+    assert str(_resolve_tsconfig_alias("@dir/sub", sem_pega_tudo)).replace("\\", "/") == "dir/sub"
 
 
 def test_curinga_real_vence_prefixo_de_diretorio():
     """A regra do docstring, prendida como comportamento: com o pega-tudo no
     conjunto, e ele que ganha, e nao o prefixo de diretorio mais especifico.
     Foi este teste que me pegou escrevendo a expectativa errada."""
-    assert str(_resolve_tsconfig_alias("@dir/sub", ALIASES)).replace("\\\\", "/") == "raiz/@dir/sub"
+    assert str(_resolve_tsconfig_alias("@dir/sub", ALIASES)).replace("\\", "/") == "raiz/@dir/sub"
 
 
 def test_a_ordem_de_especificidade_continua_valendo():
     """Exato ganha de curinga, e curinga de prefixo mais longo ganha do curto.
     Preso aqui porque a correcao mexe no mesmo laco que escolhe o vencedor."""
     aliases = {"*": ["./curto/*"], "@a/*": ["./longo/*"], "@a/exato": ["./exato.ts"]}
-    assert str(_resolve_tsconfig_alias("@a/exato", aliases)).replace("\\\\", "/") == "exato.ts"
-    assert str(_resolve_tsconfig_alias("@a/outro", aliases)).replace("\\\\", "/") == "longo/outro"
-    assert str(_resolve_tsconfig_alias("zzz", aliases)).replace("\\\\", "/") == "curto/zzz"
+    assert str(_resolve_tsconfig_alias("@a/exato", aliases)).replace("\\", "/") == "exato.ts"
+    assert str(_resolve_tsconfig_alias("@a/outro", aliases)).replace("\\", "/") == "longo/outro"
+    assert str(_resolve_tsconfig_alias("zzz", aliases)).replace("\\", "/") == "curto/zzz"
 
 
 def test_o_casamento_vazio_realmente_acontece():

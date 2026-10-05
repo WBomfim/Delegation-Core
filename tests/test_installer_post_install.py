@@ -284,7 +284,7 @@ def test_dashboard_ausente_nao_e_falha_da_instalacao(
 
     r = installer.post_install(checkout)
     assert r["dashboard"]["status"] in ("not_found", "unsupported")
-    assert r["docs_and_hooks"]["installed"], "parou antes de instalar os docs"
+    assert r["docs"]["installed"], "parou antes de instalar os docs"
 
 
 def test_uma_excecao_no_dashboard_vira_status_e_nao_propaga(monkeypatch, tmp_path):

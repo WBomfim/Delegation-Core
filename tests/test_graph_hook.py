@@ -6,6 +6,7 @@ a delegation-core venv actually existing at ~/.delegation_core/venv on whatever
 machine runs the suite.
 """
 
+import os
 import subprocess
 import sys
 
@@ -30,7 +31,8 @@ def test_install_writes_executable_hook(repo):
     assert result["status"] == "installed"
     hook_path = repo / ".git" / "hooks" / "post-commit"
     assert hook_path.exists()
-    assert hook_path.stat().st_mode & 0o111  # executable bits set
+    if os.name != "nt":  # o Windows nao tem bit de executavel
+        assert hook_path.stat().st_mode & 0o111
     content = hook_path.read_text()
     assert "my-graph" in content
     assert str(repo) in content

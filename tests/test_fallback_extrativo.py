@@ -23,7 +23,7 @@ chamador, com o AST reconstruindo cada prompt:
 8.596 notas varridas, TRES com texto de prompt no corpo:
 
     Reference/2026-09-03-Relatorio do job noturno - defeitos silenciosos.md
-    Reference/2026-09-03-Validacao tecnica dos Agentes PMO - o que o Andre.md
+    Reference/2026-09-03-Validacao tecnica dos Agentes PMO - o que o cliente.md
     2026-W35-maintenance.md
 
 As duas primeiras comecam com "OUTPUT: Markdown only. No preamble, no trailing

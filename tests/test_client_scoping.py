@@ -15,15 +15,15 @@ from delegation_core.vault import VaultManager, client_from_path, client_slug
 # ── normalisation: one bucket, both sides ────────────────────────────────────
 
 def test_case_variants_fold_to_one_slug():
-    """111 notes said Gazin and 13 said gazin; an exact-equality filter for
+    """111 notes said Nortex and 13 said nortex; an exact-equality filter for
     either missed the other's rows and said so by returning fewer results."""
-    assert client_slug("Gazin") == client_slug("gazin") == client_slug("GAZIN") == "gazin"
+    assert client_slug("Nortex") == client_slug("nortex") == client_slug("NORTEX") == "nortex"
 
 
 def test_accents_and_punctuation_fold():
-    assert client_slug("Grupo Angelus") == "grupo-angelus"
-    assert client_slug("Aliter & Co.") == "aliter-co"
-    assert client_slug("  China Gate  ") == "china-gate"
+    assert client_slug("Grupo Aurora") == "grupo-aurora"
+    assert client_slug("Brisa & Co.") == "brisa-co"
+    assert client_slug("  Porto Norte  ") == "porto-norte"
 
 
 def test_folding_does_not_invent_equality():
@@ -47,28 +47,28 @@ def test_empty_and_punctuation_only_values_yield_nothing():
 # ── path derivation: reach the 93%, but never guess ─────────────────────────
 
 def test_a_configured_root_yields_the_segment_beneath_it():
-    assert client_from_path("/Work/Oksigen/Gazin/deck.pdf", ["/Work/Oksigen"]) == "gazin"
+    assert client_from_path("/Work/Acme/Nortex/deck.pdf", ["/Work/Acme"]) == "nortex"
 
 
 def test_no_configured_root_means_no_client():
     """A wrong label is worse than none: unlabelled still surfaces in an
     unfiltered search, mislabelled is silently excluded from the right filter."""
-    assert client_from_path("/Work/Oksigen/Gazin/deck.pdf", []) == ""
-    assert client_from_path("/Work/Oksigen/Gazin/deck.pdf", None) == ""
+    assert client_from_path("/Work/Acme/Nortex/deck.pdf", []) == ""
+    assert client_from_path("/Work/Acme/Nortex/deck.pdf", None) == ""
 
 
 def test_a_non_matching_root_is_not_forced():
-    assert client_from_path("/Elsewhere/Gazin/deck.pdf", ["/Work/Oksigen"]) == ""
+    assert client_from_path("/Elsewhere/Nortex/deck.pdf", ["/Work/Acme"]) == ""
 
 
 def test_a_file_directly_in_the_root_has_no_client_segment():
-    assert client_from_path("/Work/Oksigen/loose.pdf", ["/Work/Oksigen"]) == ""
+    assert client_from_path("/Work/Acme/loose.pdf", ["/Work/Acme"]) == ""
 
 
 def test_derivation_normalises_like_everything_else():
-    assert client_from_path("/W/O/Grupo Angelus/x.pdf", ["/W/O"]) == "grupo-angelus"
-    assert client_from_path("/W/O/GAZIN/x.pdf", ["/W/O"],
-                            {"gazin": "gazin-holding"}) == "gazin-holding"
+    assert client_from_path("/W/O/Grupo Aurora/x.pdf", ["/W/O"]) == "grupo-aurora"
+    assert client_from_path("/W/O/NORTEX/x.pdf", ["/W/O"],
+                            {"nortex": "nortex-holding"}) == "nortex-holding"
 
 
 # ── end to end, against a real collection ───────────────────────────────────
@@ -106,7 +106,7 @@ class _Embedder:
 def vm(tmp_path):
     import chromadb
     cfg = Config(vault_path=str(tmp_path), vault_folders=["Notes"],
-                 client_path_roots=["/Work/Oksigen"],
+                 client_path_roots=["/Work/Acme"],
                  client_aliases={"campo-incorporadora": "campo"},
                  search_threshold=0.0)
     (tmp_path / "Notes").mkdir()
@@ -130,11 +130,11 @@ def _note(vm, rel, body, client=None):
 
 
 def test_frontmatter_client_is_promoted_and_normalised(vm):
-    _note(vm, "Notes/a.md", "retention expansion metrics", client="Gazin")
-    _note(vm, "Notes/b.md", "retention expansion metrics", client="gazin")
+    _note(vm, "Notes/a.md", "retention expansion metrics", client="Nortex")
+    _note(vm, "Notes/b.md", "retention expansion metrics", client="nortex")
     got = vm.collection.get(include=["metadatas"])
     slugs = {m.get("client") for m in got["metadatas"]}
-    assert slugs == {"gazin"}, "both spellings must land in one bucket"
+    assert slugs == {"nortex"}, "both spellings must land in one bucket"
 
 
 def test_a_note_without_a_client_carries_none(vm):
@@ -145,23 +145,23 @@ def test_a_note_without_a_client_carries_none(vm):
 
 def test_the_filter_excludes_other_clients(vm):
     """The reported symptom: ten results, six of them another client."""
-    _note(vm, "Notes/g.md", "retention expansion metrics", client="Gazin")
+    _note(vm, "Notes/g.md", "retention expansion metrics", client="Nortex")
     for i in range(6):
         _note(vm, f"Notes/c{i}.md", "retention expansion metrics", client="Campo Incorporadora")
 
     unfiltered = vm.search("retention expansion metrics", limit=10)
     assert len(unfiltered) == 7
 
-    only_gazin = vm.search("retention expansion metrics", limit=10, client="gazin")
-    assert [h["path"] for h in only_gazin] == ["Notes/g.md"]
+    only_nortex = vm.search("retention expansion metrics", limit=10, client="nortex")
+    assert [h["path"] for h in only_nortex] == ["Notes/g.md"]
 
 
 def test_the_query_side_is_normalised_too(vm):
-    """A patch that normalised only on write leaves client="Gazin" matching
+    """A patch that normalised only on write leaves client="Nortex" matching
     nothing it just wrote — which reads as "that client has no notes"."""
-    _note(vm, "Notes/g.md", "retention expansion metrics", client="gazin")
-    assert vm.search("retention expansion metrics", limit=5, client="Gazin")
-    assert vm.search("retention expansion metrics", limit=5, client="  GAZIN ")
+    _note(vm, "Notes/g.md", "retention expansion metrics", client="nortex")
+    assert vm.search("retention expansion metrics", limit=5, client="Nortex")
+    assert vm.search("retention expansion metrics", limit=5, client="  NORTEX ")
 
 
 def test_the_alias_map_applies_on_both_sides(vm):
@@ -170,48 +170,48 @@ def test_the_alias_map_applies_on_both_sides(vm):
 
 
 def test_client_composes_with_scope_rather_than_replacing_it(vm):
-    _note(vm, "Notes/g.md", "retention expansion metrics", client="Gazin")
+    _note(vm, "Notes/g.md", "retention expansion metrics", client="Nortex")
     vm.index_note("retention expansion metrics",
-                  {"title": "ext", "path": "/Work/Oksigen/Gazin/deck.pdf",
+                  {"title": "ext", "path": "/Work/Acme/Nortex/deck.pdf",
                    "folder": "_external", "is_external": "true",
-                   "client": "Gazin"}, doc_id="/Work/Oksigen/Gazin/deck.pdf")
+                   "client": "Nortex"}, doc_id="/Work/Acme/Nortex/deck.pdf")
 
-    both = vm.search("retention expansion metrics", limit=10, client="gazin")
+    both = vm.search("retention expansion metrics", limit=10, client="nortex")
     assert len(both) == 2
 
     notes_only = vm.search("retention expansion metrics", limit=10,
-                           scope="notes", client="gazin")
+                           scope="notes", client="nortex")
     assert [h["path"] for h in notes_only] == ["Notes/g.md"]
 
 
 def test_an_unknown_client_returns_nothing_rather_than_everything(vm):
-    _note(vm, "Notes/g.md", "retention expansion metrics", client="Gazin")
+    _note(vm, "Notes/g.md", "retention expansion metrics", client="Nortex")
     assert vm.search("retention expansion metrics", limit=10, client="nobody") == []
 
 
 def test_hits_carry_their_client_even_unfiltered(vm):
     """So a caller can see that six of ten are another client, which is what
     tells it a filter was called for."""
-    _note(vm, "Notes/g.md", "retention expansion metrics", client="Gazin")
+    _note(vm, "Notes/g.md", "retention expansion metrics", client="Nortex")
     hit = vm.search("retention expansion metrics", limit=5)[0]
-    assert hit["client"] == "gazin"
+    assert hit["client"] == "nortex"
 
 
 def test_stats_lists_the_clients_present(vm):
-    _note(vm, "Notes/g.md", "retention expansion metrics", client="Gazin")
+    _note(vm, "Notes/g.md", "retention expansion metrics", client="Nortex")
     _note(vm, "Notes/c.md", "retention expansion metrics", client="Campo Incorporadora")
     counts = vm._client_counts()
-    assert counts == {"gazin": 1, "campo": 1}
+    assert counts == {"nortex": 1, "campo": 1}
 
 
 def test_client_counts_count_documents_not_chunks(vm):
     """A chunked 160-page deck must not make one client look like a hundred."""
     vm.cfg.vault_chunk_size = 60
     vm.cfg.vault_chunk_overlap = 10
-    _note(vm, "Notes/big.md", "retention expansion metrics " * 40, client="Gazin")
+    _note(vm, "Notes/big.md", "retention expansion metrics " * 40, client="Nortex")
     rows, _ = vm._index_counts()
     assert rows > 1, "the fixture must actually produce several chunks"
-    assert vm._client_counts() == {"gazin": 1}
+    assert vm._client_counts() == {"nortex": 1}
 
 
 def test_frontmatter_custom_metadata_is_promoted_and_persists(vm):

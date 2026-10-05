@@ -298,11 +298,11 @@ def test_link_para_fonte_ingerida_nao_conta_como_quebrado(tmp_path, monkeypatch)
     Medido neste vault em 24/09/2026: os 9 links quebrados restantes eram todos
     notas citando arquivos de memoria do operador, e todos resolviam.
     """
-    from delegation_core import notes as notes_mod
+    from delegation_core import vault as vault_mod
     from delegation_core.vault import VaultManager
 
     monkeypatch.setattr(
-        notes_mod, "_load_registry_for_links",
+        vault_mod, "_load_registry_for_links",
         lambda: {"/fora/do/vault": {"files": {"/fora/do/vault/feedback_algo.md": [0, 1]}}})
 
     cfg = _vault_with(tmp_path, "vi1")
@@ -320,12 +320,12 @@ def test_registro_de_ingestao_ilegivel_nao_derruba_a_checagem(tmp_path, monkeypa
     """A checagem de saude nao pode estourar porque o registro de OUTRO
     subsistema corrompeu: um numero levemente pessimista vale mais que nenhum.
     """
-    from delegation_core import notes as notes_mod
+    from delegation_core import vault as vault_mod
     from delegation_core.vault import VaultManager
 
     def explode():
         raise ValueError("registro corrompido")
-    monkeypatch.setattr(notes_mod, "_load_registry_for_links", explode)
+    monkeypatch.setattr(vault_mod, "_load_registry_for_links", explode)
 
     cfg = _vault_with(tmp_path, "vi2")
     (cfg.vault / "Reference" / "n.md").write_text(

@@ -9,7 +9,7 @@ nove modulos pedem `safe_filename`, `yaml_quote_scalar`, `compose_note` ou
 `client_from_path` a `vault`, e nenhum deles quer o VaultManager junto.
 
 O corte e onde as dependencias mudam. Tudo aqui depende so da biblioteca
-padrao mais `linker.frontmatter_aliases`; nada aqui importa chromadb,
+padrao; nada aqui importa chromadb,
 embeddings ou gpu. E por isso que o bloco sai inteiro sem tocar em nenhuma
 linha do que ficou.
 
@@ -27,10 +27,9 @@ import os
 import re
 import threading
 import unicodedata
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 
 from . import locking
-from .linker import frontmatter_aliases
 
 logger = logging.getLogger("notes")
 
@@ -141,14 +140,14 @@ def client_slug(value: str, aliases: dict | None = None) -> str:
     """Normalise a client name to the single form the index is keyed by.
 
     ChromaDB's `where` is exact equality, so an unnormalised key is a filter
-    that silently under-returns: one vault holds `Gazin` on 111 notes and
-    `gazin` on 13, and a query for either missed the other's rows without
+    that silently under-returns: one vault holds `Nortex` on 111 notes and
+    `nortex` on 13, and a query for either missed the other's rows without
     saying so. Lowercased, accent-folded, and everything that is not
     alphanumeric collapsed to a single hyphen.
 
     THE SAME FUNCTION MUST RUN ON BOTH SIDES — promotion and query. A patch
-    that normalised only on the way in leaves `client="Gazin"` missing every
-    row it just normalised to `gazin`, which looks exactly like "that client
+    that normalised only on the way in leaves `client="Nortex"` missing every
+    row it just normalised to `nortex`, which looks exactly like "that client
     has no notes".
 
     Folding cannot merge genuinely different strings: `Campo Incorporadora`
@@ -178,8 +177,8 @@ def client_from_path(path: str, roots: list[str] | None = None,
 
     So this guesses nothing. `roots` is an explicit, configured list of parent
     directories, and the client is the single path segment directly beneath the
-    matching root — `/Work/Oksigen/Gazin/deck.pdf` under root `/Work/Oksigen`
-    gives `gazin`. No configured root matches, no client. Empty by default, so
+    matching root — `/Work/Acme/Nortex/deck.pdf` under root `/Work/Acme`
+    gives `nortex`. No configured root matches, no client. Empty by default, so
     an install that has not opted in cannot be mislabelled by this at all.
     """
     if not path or not roots:
@@ -357,6 +356,67 @@ def yaml_unquote_scalar(value: str) -> str:
 _LEADING_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 
 
+def frontmatter_aliases(content: str) -> set:
+    """Return the set of Obsidian `aliases:` declared in a note's frontmatter.
+    Supports both block-list and inline `[a, b]` forms. Empty set if none."""
+    if not content.startswith("---\n"):
+        return set()
+    close = content.find("\n---\n", 4)
+    if close == -1:
+        return set()
+    fm = content[4:close]
+    # [^\S\n]* = horizontal whitespace only, so it never crosses the newline into
+    # the first block-list item (the bug that swallowed `- item` into group 1).
+    m = re.search(r"^aliases:[^\S\n]*(.*)$", fm, re.MULTILINE)
+    if not m:
+        return set()
+    out: set = set()
+    inline = m.group(1).strip()
+    if inline.startswith("["):                       # aliases: [a, b]
+        out |= {x.strip().strip('"').strip("'") for x in inline[1:-1].split(",")}
+    else:                                            # block list under aliases:
+        for line in fm[m.end():].splitlines():
+            lm = re.match(r"[^\S\n]*-\s+(.*\S)", line)
+            if lm:
+                out.add(lm.group(1).strip().strip('"').strip("'"))
+            elif line.strip() and not line[:1].isspace():
+                break                                # next top-level key → stop
+    return {a for a in out if a}
+
+
+def _frontmatter_parses(content: str) -> bool:
+    """Does this note's frontmatter block survive a real YAML parser?
+
+    True for a note with no frontmatter at all: an absent block is not a broken
+    one, and counting it would invent a defect in every plain note.
+
+    PyYAML is a declared dependency of this package (pyproject: pyyaml>=6.0) and
+    already imported lazily by sidecar.py and graph/manifest_ingest.py, so this
+    adds no new requirement. Imported inside the function for the same reason
+    they do it: the health scan is the only caller and it is not on the import
+    path of the daemon's startup.
+    """
+    if not content.startswith("---"):
+        return True
+    # The same regex compose_note uses to find a caller's block, so "what counts
+    # as frontmatter" has one definition here and is not re-guessed.
+    m = _LEADING_FRONTMATTER_RE.match(content)
+    if m is None:
+        # Opens a block and never closes it. Not something YAML can be asked
+        # about, and not something to report as a parse failure either: the
+        # existing `truncated` metric is what covers a note cut off mid-write.
+        return True
+    try:
+        import yaml
+    except ImportError:      # pragma: no cover - declared dependency
+        return True
+    try:
+        yaml.safe_load(m.group(1))
+    except Exception:
+        return False
+    return True
+
+
 def compose_note(title: str, content: str, date_str: str,
                  ai_generated: bool = True) -> str:
     """Build note text carrying exactly one YAML frontmatter block.
@@ -513,23 +573,7 @@ def _merge_alias(frontmatter: str, alias: str) -> str:
     return frontmatter
 
 
-def _load_registry_for_links() -> dict:
-    """O registro de ingestao, isolado numa funcao para ser substituivel.
-
-    O import e tardio de proposito: `ingest.py` importa `client_from_path` de
-    `vault.py`, que importa deste modulo, entao um import no topo daqui fecha
-    o ciclo e quebra a carga do pacote inteiro. Tardio, o ciclo nunca existe.
-
-    Funcao separada, e nao um import embutido em `ingested_link_stems`, porque
-    um teste precisa trocar o registro sem tocar em disco nem no subsistema de
-    ingestao. Sem esta costura, testar a classificacao dos links exigiria
-    escrever um registro real no HOME de quem roda a suite.
-    """
-    from .ingest import _load_registry
-    return _load_registry()
-
-
-def ingested_link_stems() -> set[str]:
+def ingested_link_stems(registro: dict) -> set[str]:
     """Nomes pelos quais um arquivo ingerido de fora do vault pode ser linkado.
 
     Le o registro de ingestao em vez de varrer disco: o registro ja guarda o
@@ -542,16 +586,10 @@ def ingested_link_stems() -> set[str]:
     realmente aponta para algo que o servidor nao serve. A checagem se cura
     sozinha quando a pasta e reingerida.
 
-    Falha calada por escolha. Esta funcao serve a uma checagem de saude, e uma
-    checagem que estoura porque o registro de OUTRO subsistema esta corrompido
-    troca um numero levemente pessimista por nenhum numero. Sem registro, cada
-    link para fonte ingerida volta a contar como quebrado, que e exatamente o
-    comportamento anterior a esta funcao.
+    Recebe o registro em vez de le-lo: quem le e o `vault`, que fica acima do
+    `ingest` na hierarquia de modulos. Ler daqui fazia o `notes`, a camada mais
+    baixa, depender do `ingest`, e fechava um ciclo de import.
     """
-    try:
-        registro = _load_registry_for_links()
-    except Exception:
-        return set()
 
     nomes: set[str] = set()
     for entrada in registro.values():

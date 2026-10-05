@@ -46,21 +46,13 @@ from datetime import datetime
 from pathlib import Path
 
 from . import config as _config
-
-logger = logging.getLogger("recuperacao")
-
-#: Trechos de caminho que denunciam uma pasta sincronizada por cliente de nuvem.
-#: Comparados em minusculas contra cada parte do caminho.
-_MARCAS_DE_NUVEM = (
-    "onedrive",            # "OneDrive", "OneDrive - Empresa"
-    "mobile documents",    # iCloud Drive no macOS
-    "icloud drive",
-    "dropbox",
-    "google drive",
-    "googledrive",
-    "cloudstorage",        # ~/Library/CloudStorage, onde o macOS monta todos
+from .config import (  # noqa: F401  (moram no config; reexportados)
+    _MARCAS_DE_NUVEM,
+    caminho_local_do_indice,
+    em_pasta_sincronizada,
 )
 
+logger = logging.getLogger("recuperacao")
 
 def _dir_de_estado() -> Path:
     # Lido na hora, e nao importado: o conftest da suite reaponta
@@ -114,16 +106,6 @@ def _pid_vivo(pid: int) -> bool:
         except PermissionError:
             return True
         return True
-
-
-def em_pasta_sincronizada(caminho: Path) -> bool:
-    partes = [p.lower() for p in Path(caminho).expanduser().parts]
-    return any(marca in parte for parte in partes for marca in _MARCAS_DE_NUVEM)
-
-
-def caminho_local_do_indice() -> Path:
-    """Onde o indice mora quando nao pode morar dentro do vault."""
-    return _dir_de_estado() / "indice"
 
 
 # ── marcador de abertura ─────────────────────────────────────────────────────

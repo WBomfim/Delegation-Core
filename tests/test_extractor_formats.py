@@ -54,9 +54,13 @@ def test_json_is_in_supported_and_extracts(tmp_path):
     assert '"tokens": [\n    "color",\n    "spacing"\n  ]' in text
 
 
-@pytest.mark.parametrize("suffix", [".png", ".svg", ".js", ".css"])
+@pytest.mark.parametrize("suffix", [".svg", ".js", ".css"])
 def test_formats_that_are_deliberately_not_documents(tmp_path, suffix):
-    """Images and script files carry no document prose: they would add rows without content."""
+    """Script and style files carry no document prose: they would add rows without content.
+
+    Raster images left this list on 27/09/2026: with OCR, 75 of 78 real
+    screenshots carried text. The concern this test encoded still holds for
+    images WITHOUT text, and ingest.py now skips those (test_ingest_reporting)."""
     f = tmp_path / f"asset{suffix}"
     f.write_text("{}", encoding="utf-8")
 

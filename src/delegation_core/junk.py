@@ -6,7 +6,7 @@ before they reach the classifier or the vault. The model classifier has
 repeatedly misfiled these into decisions/research — deterministic filtering
 here is cheaper and more reliable than prompt-tuning.
 
-SAAD deployment introduced JUNK_STEM_RE to replace the original set-based approach.
+Field deployment A introduced JUNK_STEM_RE to replace the original set-based approach.
 """
 
 import re

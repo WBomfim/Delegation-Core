@@ -176,8 +176,10 @@ def test_o_estado_do_indice_sobrevive_a_uma_escrita_que_falha(tmp_path, monkeypa
     v._save_index_state({"a.md": 1.0, "b.md": 2.0})
     antes = v._load_index_state()
 
-    import delegation_core.vault as vault_mod
-    _escrita_rasgada(monkeypatch, vault_mod)
+    # A escrita atomica do estado mora no notes (gravar_estado); e o os de la
+    # que precisa falhar.
+    import delegation_core.notes as notes_mod
+    _escrita_rasgada(monkeypatch, notes_mod)
     v._save_index_state({"c.md": 3.0})     # engolida por design, mas nao pode destruir
 
     assert v._load_index_state() == antes, (

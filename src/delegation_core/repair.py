@@ -134,9 +134,9 @@ def encontrar(cfg) -> dict:
             sem_nota.append(origem.name)
             continue
         achados.append({
-            "source": str(origem.relative_to(vault)),
+            "source": origem.relative_to(vault).as_posix(),
             "stub": texto,
-            "notes": [str(n.relative_to(vault)) for n in notas],
+            "notes": [n.relative_to(vault).as_posix() for n in notas],
         })
 
     return {
@@ -203,7 +203,7 @@ def aplicar(cfg, *, arquivar: bool = False) -> dict:
                         n += 1
                     shutil.move(str(nota), str(alvo))
                     tratadas.append({"note": rel, "action": "archived",
-                                     "to": str(alvo.relative_to(vault))})
+                                     "to": alvo.relative_to(vault).as_posix()})
                 else:
                     _troca_o_corpo(nota, achado["stub"])
                     tratadas.append({"note": rel, "action": "replaced_with_stub"})

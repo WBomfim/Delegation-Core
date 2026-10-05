@@ -92,9 +92,13 @@ def test_contagem_de_ferramentas_mcp_na_prosa_bate_com_o_servidor():
     real = len(re.findall(r"^@mcp\.tool\(\)", SERVER.read_text(encoding="utf-8"), re.MULTILINE))
     assert real > 0, "nenhum @mcp.tool() encontrado — o padrao de busca quebrou"
 
-    for doc in (HANDOFF, README):
+    # docs/ entrou depois que o docs/MAPA.md ficou dizendo 54 com o servidor em
+    # 56, sem que nada falhasse: o teste so olhava HANDOFF e README.
+    docs = sorted((HANDOFF.parent / "docs").glob("*.md"))
+    assert docs, "nenhum .md em docs/: o caminho do teste quebrou"
+    for doc in (HANDOFF, README, *docs):
         texto = doc.read_text(encoding="utf-8")
-        for achado in re.finditer(r"\b(\d{1,4})\s+(?:public\s+)?(?:MCP\s+tools|`?@mcp\.tool)", texto):
+        for achado in re.finditer(r"\b(\d{1,4})\s+(?:public\s+)?(?:MCP\s+tools|ferramentas\s+MCP|`?@mcp\.tool)", texto):
             assert int(achado.group(1)) == real, (
                 f"{doc.name} diz {achado.group(1)} ferramentas MCP, o servidor "
                 f"registra {real}. Ou corrija o numero, ou tire-o e aponte para "

@@ -31,17 +31,16 @@ _LOCK_MAX_AGE_SECONDS = 3600
 
 def _lock_is_stale(lock_path: Path) -> bool:
     """A lock is stale if it has aged past the cutoff, or its owning PID is
-    provably dead. On POSIX, liveness is checked with a signal-0 kill (raises
-    ProcessLookupError for a dead PID without actually signaling it). Windows
-    has no equally cheap check here, so it relies on the age cutoff alone."""
+    provably dead. Liveness comes from psutil (a declared dependency), which
+    answers the same question on every platform. The signal-0 kill is only a
+    POSIX fallback: on Windows os.kill(pid, 0) is not a probe, it terminates
+    the process."""
     try:
         age = time.time() - lock_path.stat().st_mtime
     except OSError:
         return True
     if age > _LOCK_MAX_AGE_SECONDS:
         return True
-    if platform.system() == "Windows":
-        return False
     try:
         conteudo = lock_path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -68,6 +67,12 @@ def _lock_is_stale(lock_path: Path) -> bool:
         pid = int(conteudo)
     except ValueError:
         return True
+    try:
+        import psutil
+        return not psutil.pid_exists(pid)
+    except ImportError:  # pragma: no cover - psutil e dependencia declarada
+        if platform.system() == "Windows":
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

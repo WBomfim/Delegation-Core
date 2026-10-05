@@ -65,7 +65,7 @@ def export(vault, title: str, summary: str, key_decisions: str = "") -> dict:
     # que o autor fornece e so acrescenta o que falta.
     full = compose_note(title, "---\ntype: session\n---\n\n" + "\n".join(lines), date_str)
     dest.write_text(full, encoding="utf-8")
-    rel = str(dest.relative_to(cfg.vault))
+    rel = dest.relative_to(cfg.vault).as_posix()
     # Carimba so em sucesso: ver a nota em notewriter.create_note. Sem isto, o
     # digest de sessao que acabou de ser escrito e reembutido inteiro no
     # proximo reindex incremental, mesmo intocado.

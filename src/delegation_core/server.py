@@ -1,5 +1,5 @@
 """
-server.py — FastMCP tool definitions for delegation-core v0.4.
+server.py: FastMCP tool definitions for delegation-core.
 Called by run_server(); never run directly.
 
 The tool surface is deliberately NOT listed here. This header used to carry a
@@ -393,7 +393,7 @@ async def search_vault(query: str, limit: int = 5, use_local: bool = False,
     Every response names the scope it used.
 
     client='<name>' narrows to one client, composing with scope rather than
-    replacing it. Matching is normalised, so 'Gazin', 'gazin' and 'GAZIN' are
+    replacing it. Matching is normalised, so 'Nortex', 'nortex' and 'NORTEX' are
     one client. It reaches ingested files too, when client_path_roots is
     configured. Use it whenever a question is about one client and the vault
     holds several — unfiltered, a query for one client's retention metrics came
@@ -558,7 +558,6 @@ async def compress(source: str, raw_content: str, use_local: bool = False) -> st
         try:
             result = await engine.invoke(
                 f"Extract only key facts, decisions, and action items. No preamble.\n"
-                f"{_lang}\n"
                 f"Source: {source}\n\n{raw_content[:limit]}",
                 system=with_lang("Compression Engine. Be extremely concise.", engine.cfg),
                 max_tokens=engine.budget("compress", 1200),
@@ -608,6 +607,15 @@ def vault_stats() -> str:
     return json.dumps(_vault.get_stats())
 
 
+
+def _dispositivos(cfg) -> dict:
+    """Onde cada modelo foi configurado para rodar. O valor de config, e nao o
+    resolvido: resolver "auto" importa o torch, caro demais para o heartbeat."""
+    from .engine import llama_device
+    return {"embeddings": (getattr(cfg, "embed_device", "auto") or "auto").strip().lower(),
+            "modelo_local": llama_device(cfg)}
+
+
 @mcp.tool()
 async def heartbeat(force: bool = False) -> str:
     """
@@ -639,6 +647,11 @@ async def heartbeat(force: bool = False) -> str:
     pedido = recuperacao.reconstrucao_pendente()
     if pedido and status == "healthy":
         status = "degraded"
+    # BGE ou ChromaDB que nao subiram: o servidor responde, a busca nao. Era
+    # "healthy" ate 02/10/2026, quando um Windows bloqueou a DLL do PyTorch.
+    erro_embeddings = getattr(_vault, "init_error", None)
+    if erro_embeddings:
+        status = "degraded"
     return json.dumps({
         "status":      status,
         "index_recovery": pedido and {
@@ -649,8 +662,11 @@ async def heartbeat(force: bool = False) -> str:
             "detail": "the index crashed whoever opened it and was set aside; the "
                       "daemon is rebuilding it from the vault and the ingest sources, "
                       "and search fills in as it goes"},
+        "embeddings":  ({"status": "unavailable", "error": erro_embeddings}
+                        if erro_embeddings else {"status": "ok"}),
         "timestamp":   datetime.now().isoformat(),
         "engine_mode": cfg.engine_mode,
+        "dispositivos": _dispositivos(cfg),
         "llama_cpp":   llama_state,
         "llama_url":   cfg.llama_url,
         "vault":       stats,
@@ -965,7 +981,7 @@ def vault_update_note(note_name: str, append_content: str) -> str:
         matches = _vault.find_notes_by_stem(note_name)
         if matches:
             f = matches[0]
-            rel = str(f.relative_to(_vault.cfg.vault))
+            rel = f.relative_to(_vault.cfg.vault).as_posix()
             _post_write_links(f, rel, f.parent.name, f.stem)
     return json.dumps(result)
 
@@ -1097,7 +1113,6 @@ async def search_web(query: str, num_results: int = 5, use_local: bool = False) 
 
 # ── fire-and-forget ───────────────────────────────────────────────────────────
 
-@mcp.tool()
 async def _bg_maintenance_wrapper() -> dict:
     """Runs _full_maintenance_cycle with a fresh DelegationEngine for the background thread.
 

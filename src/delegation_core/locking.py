@@ -14,7 +14,7 @@ que ninguem le um arquivo pela metade; ela nao garante que quem leu antes de
 voce ainda esteja no que voce grava. Sao dois problemas diferentes com nomes
 parecidos, e confundi-los e o que faz o defeito parecer resolvido.
 
-O PR#2 do William, portado nesta mesma noite, deixa a ingestao **mais facil de
+O PR #2, portado nesta mesma noite, deixa a ingestao **mais facil de
 disparar**, com fontes declaradas e disparo por nome. Facilitar o disparo
 aumenta a chance de alguem disparar duas. Por isso a corrida foi consertada
 junto e nao depois.
@@ -38,7 +38,6 @@ ingestao por falta de trava e pior que a corrida que a trava evita.
 from __future__ import annotations
 
 import logging
-import os
 import time
 from contextlib import contextmanager
 from pathlib import Path

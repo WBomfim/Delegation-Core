@@ -88,7 +88,7 @@ def create_note(vault, folder: str, title: str, content: str,
     except OSError as e:
         return {"error": f"Write failed: {e}"}
 
-    rel = str(dest.relative_to(cfg.vault))
+    rel = dest.relative_to(cfg.vault).as_posix()
 
     # Carimbar aqui, e nao dentro do `index_note`. Medido em 26/09/2026:
     # carimbar uma nota custa ~5 ms, desprezivel para uma escrita avulsa, mas
@@ -132,7 +132,7 @@ def save_note(vault, rel_path: str, content: str) -> dict:
     except OSError as e:
         return {"error": f"Write failed: {e}"}
 
-    rel = str(dest.relative_to(cfg.vault))
+    rel = dest.relative_to(cfg.vault).as_posix()
     folder = rel.split("/")[0]
     if vault.index_note(content, {"title": dest.stem, "path": rel, "folder": folder}):
         vault.stamp_indexed([rel])
@@ -235,7 +235,7 @@ def rename_note(vault, rel_path: str, new_title: str, retitle: bool = True) -> d
             retargeted = _retarget(text, old_stem, new_stem)
             if retargeted != text:
                 staged.append((f, text, retargeted))
-                referrers.append(str(f.relative_to(cfg.vault)))
+                referrers.append(f.relative_to(cfg.vault).as_posix())
 
     written: list[tuple[Path, str]] = []
     try:
@@ -251,7 +251,7 @@ def rename_note(vault, rel_path: str, new_title: str, retitle: bool = True) -> d
                 logger.error("Rollback failed for %s — vault may be inconsistent", path)
         return {"error": f"Rename failed, changes rolled back: {e}"}
 
-    new_rel = str(dest.relative_to(cfg.vault))
+    new_rel = dest.relative_to(cfg.vault).as_posix()
     folder = new_rel.split("/")[0]
     vault.delete_notes([rel_path])
     # Carimbar o que indexou, e so o que indexou. Sem isto um rename deixa a
@@ -267,7 +267,7 @@ def rename_note(vault, rel_path: str, new_title: str, retitle: bool = True) -> d
                         {"title": new_title, "path": new_rel, "folder": folder}):
         carimbar.append(new_rel)
     for path, _, after in staged[1:]:
-        rel = str(path.relative_to(cfg.vault))
+        rel = path.relative_to(cfg.vault).as_posix()
         if vault.index_note(after, {"title": path.stem, "path": rel,
                                     "folder": rel.split("/")[0]}):
             carimbar.append(rel)

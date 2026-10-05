@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-HOOK = Path(__file__).resolve().parents[1] / "hooks" / "session_start_brief.py"
+HOOK = Path(__file__).resolve().parents[1] / "src" / "delegation_core" / "hooks" / "session_start_brief.py"
 
 
 @pytest.fixture(scope="module")

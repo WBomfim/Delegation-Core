@@ -29,7 +29,6 @@ def cfg(monkeypatch, tmp_path):
     import delegation_core.config as config_mod
     monkeypatch.setattr(config_mod, "CONFIG_DIR", tmp_path / "cfgdir")
     monkeypatch.setattr(doctor, "CONFIG_DIR", tmp_path / "cfgdir")
-    monkeypatch.setattr(doctor, "INSTALLED_HOOKS", tmp_path / "cfgdir" / "hooks")
     (tmp_path / "cfgdir").mkdir()
     c = Config(vault_path=str(tmp_path / "vault"),
                vault_folders=["Reference", "Sessions", "Decisions"])
@@ -117,40 +116,7 @@ def test_absent_vault_is_an_error(cfg, tmp_path):
     assert doctor.check_vault_folders(cfg)["status"] == "error"
 
 
-# ── hook drift ───────────────────────────────────────────────────────────────
-
-def test_hook_drift_detects_a_stale_installed_copy(cfg, tmp_path, monkeypatch):
-    repo = tmp_path / "repo_hooks"
-    repo.mkdir()
-    (repo / "session_export.py").write_text("new version\n", encoding="utf-8")
-    installed = tmp_path / "cfgdir" / "hooks"
-    installed.mkdir()
-    (installed / "session_export.py").write_text("old version\n", encoding="utf-8")
-    monkeypatch.setattr(doctor, "_repo_hooks_dir", lambda: repo)
-
-    result = doctor.check_hook_drift()
-
-    assert result["status"] == "warn"
-    assert "session_export.py" in result["detail"]
-    assert result["fix"].startswith("cp ")
-
-
-def test_hook_drift_reports_ok_when_bytes_match(cfg, tmp_path, monkeypatch):
-    repo = tmp_path / "repo_hooks"
-    repo.mkdir()
-    (repo / "h.py").write_text("same\n", encoding="utf-8")
-    installed = tmp_path / "cfgdir" / "hooks"
-    installed.mkdir()
-    (installed / "h.py").write_text("same\n", encoding="utf-8")
-    monkeypatch.setattr(doctor, "_repo_hooks_dir", lambda: repo)
-
-    assert doctor.check_hook_drift()["status"] == "ok"
-
-
-def test_hook_drift_skips_cleanly_on_a_wheel_install(cfg, monkeypatch):
-    monkeypatch.setattr(doctor, "_repo_hooks_dir", lambda: None)
-
-    assert doctor.check_hook_drift()["status"] == "skip"
+# Os hooks de sessao: tests/test_hooks_no_pacote.py (check_hooks).
 
 
 # ── registries ───────────────────────────────────────────────────────────────
@@ -412,7 +378,7 @@ def test_run_all_surfaces_the_worst_status(cfg, pasta_sombra):
 
     assert result["status"] == "error"
     assert result["counts"]["error"] >= 1
-    assert {c["check"] for c in result["checks"]} >= {"engine_mode", "vault_folders", "hook_drift", "orphan_segments", "fts_integrity"}
+    assert {c["check"] for c in result["checks"]} >= {"engine_mode", "vault_folders", "hooks", "orphan_segments", "fts_integrity"}
 
 
 # ── sentinela e fallback, que se contradizem em silencio ────────────────────

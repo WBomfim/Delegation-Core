@@ -83,7 +83,7 @@ def test_nenhum_dos_256_primeiros_codepoints_quebra():
 
 def test_um_titulo_comum_nao_ganha_escape_nenhum():
     """Escapar nao pode deformar o caso de todo mundo."""
-    assert yaml_quote_scalar("Reuniao com Abner 03-09") == '"Reuniao com Abner 03-09"'
+    assert yaml_quote_scalar("Reuniao com o cliente 03-09") == '"Reuniao com o cliente 03-09"'
 
 
 def test_acento_e_travessao_continuam_literais():

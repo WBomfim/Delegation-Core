@@ -91,8 +91,6 @@ def _step_system_check():
 
     ok  = "[green]✓[/green]"
     bad = "[red]✗[/red]"
-    dim = "[dim]"
-    end = "[/dim]"
 
     table = Table(show_header=False, box=None, padding=(0, 2))
     table.add_column("label", style="dim", min_width=22)
@@ -110,7 +108,7 @@ def _step_system_check():
         table.add_row("System packages", pkg_status)
     elif system == "Darwin":
         xcode_ok = _check_xcode()
-        table.add_row("Xcode CLT", f"{ok} installed" if xcode_ok else f"[yellow]⚠[/yellow]  not found")
+        table.add_row("Xcode CLT", f"{ok} installed" if xcode_ok else "[yellow]⚠[/yellow]  not found")
 
     console.print(table)
     console.print()
@@ -162,9 +160,9 @@ def _install_linux_packages(missing: list[str]):
     console.print()
     try:
         subprocess.run(["sudo", "apt-get", "install", "-y"] + missing, check=True)
-        console.print(f"\n  [green]✓[/green] System packages installed.\n")
+        console.print("\n  [green]✓[/green] System packages installed.\n")
     except subprocess.CalledProcessError:
-        console.print(f"\n  [red]Install failed.[/red] Try manually:")
+        console.print("\n  [red]Install failed.[/red] Try manually:")
         console.print(f"    sudo apt-get install {' '.join(missing)}\n")
 
 
@@ -334,7 +332,7 @@ def _step_model(models_dir: Path) -> str:
         if m.get("recommended"):
             name += "  [yellow]★ recommended[/yellow]"
         already = (models_dir / m["filename"]).exists()
-        size_str = f"[green]on disk[/green]" if already else m["size"]
+        size_str = "[green]on disk[/green]" if already else m["size"]
         table.add_row(str(i), name, size_str, m["ram"], m["description"])
 
     console.print("  These models run entirely on your computer.\n")
@@ -365,7 +363,7 @@ def _step_binary(llama_dir: Path) -> str:
         console.print(f"  Found existing llama.cpp: [bold]{existing}[/bold]")
         raw = console.input("  Use this? [Y/n]: ").strip().lower()
         if raw in ("", "y", "yes"):
-            console.print(f"\n  [green]✓[/green] Using existing binary.\n")
+            console.print("\n  [green]✓[/green] Using existing binary.\n")
             return str(existing)
 
     console.print("  llama.cpp is the engine that runs the AI model locally.")
@@ -379,7 +377,7 @@ def _step_binary(llama_dir: Path) -> str:
     console.print()
     result = download_llama_binary(llama_dir)
     if result:
-        console.print(f"\n  [green]✓[/green] llama.cpp installed.\n")
+        console.print("\n  [green]✓[/green] llama.cpp installed.\n")
         return str(result)
 
     console.print("\n  [yellow]Automatic download failed.[/yellow]")
@@ -394,9 +392,9 @@ def _step_startup() -> bool:
     methods = {"Linux": "systemd user service", "Darwin": "launchd agent", "Windows": "Task Scheduler"}
     method = methods.get(system, "background service")
 
-    console.print(f"  Should the AI engine start automatically when you log in?")
+    console.print("  Should the AI engine start automatically when you log in?")
     console.print(f"  [dim]Method: {method}[/dim]")
-    console.print(f"  [dim]Without this, there's a ~30 second warmup on first use each session.[/dim]\n")
+    console.print("  [dim]Without this, there's a ~30 second warmup on first use each session.[/dim]\n")
     raw = console.input("  Auto-start at login? [Y/n]: ").strip().lower()
     result = raw in ("", "y", "yes")
     console.print()
@@ -422,7 +420,7 @@ def _step_features() -> tuple[bool, str, str]:
         console.print("  [bold]Synthesis language[/bold]")
         lang_choice = _menu("Choose the language for synthesised notes:", [
             "English (default)",
-            "Portuguese (Brazilian) (prompts from the MAURICIO deployment)",
+            "Portuguese (Brazilian)",
         ])
         synthesis_lang = "pt" if lang_choice == 1 else "en"
         console.print()
@@ -645,23 +643,21 @@ def _completion(cfg: Config):
 
     agent_guide = CONFIG_DIR / "AGENT_GUIDE.md"
     system_prompt = CONFIG_DIR / "CLAUDE_SYSTEM_PROMPT.md"
-    hook_start = CONFIG_DIR / "hooks" / "session_start_brief.py"
-    hook_end = CONFIG_DIR / "hooks" / "session_export.py"
-
-    # Stock Windows Python installs expose `py`/`python`, not `python3`.
-    python_cmd = "py" if system == "Windows" else "python3"
-
+    # The installer writes this into ~/.claude/settings.json itself
+    # (clients.register_session_hooks); shown here so it can be checked.
+    from .clients import hook_executable
+    exe = hook_executable()
     hooks_snippet = (
         '{\n'
         '  "hooks": {\n'
         '    "SessionStart": [\n'
         '      { "matcher": "*", "hooks": [\n'
-        f'        {{ "type": "command", "command": "{python_cmd} {hook_start}" }}\n'
+        f'        {{ "type": "command", "command": "\\"{exe}\\" session-start" }}\n'
         '      ]}\n'
         '    ],\n'
         '    "SessionEnd": [\n'
         '      { "matcher": "*", "hooks": [\n'
-        f'        {{ "type": "command", "command": "{python_cmd} {hook_end}" }}\n'
+        f'        {{ "type": "command", "command": "\\"{exe}\\" session-end" }}\n'
         '      ]}\n'
         '    ]\n'
         '  }\n'
@@ -695,8 +691,8 @@ def _completion(cfg: Config):
     console.print(Panel(mcp_snippet, title="[bold]~/.claude.json[/bold]", border_style="blue"))
 
     console.print()
-    console.print("  [bold]3. Claude Code: install the session hooks[/bold]")
-    console.print("     Merge this into [cyan]~/.claude/settings.json[/cyan]. The SessionStart hook")
+    console.print("  [bold]3. Claude Code: session hooks[/bold]")
+    console.print("     The installer registers these in [cyan]~/.claude/settings.json[/cyan]. The SessionStart hook")
     console.print("     briefs Code on vault activity and runs maintenance on a non-empty inbox;")
     console.print("     the SessionEnd hook backs up the raw transcript to the vault.")
     console.print()
@@ -710,9 +706,9 @@ def _completion(cfg: Config):
 
     console.print()
     console.print("  [bold]5. Claude Desktop / Cowork: load the agent protocol[/bold]")
-    console.print(f"     There's no config file for this: open Claude Desktop's")
+    console.print("     There's no config file for this: open Claude Desktop's")
     console.print("     [cyan]Settings → Custom Instructions[/cyan] (and/or each Cowork project's")
-    console.print(f"     instructions) and paste the contents of:")
+    console.print("     instructions) and paste the contents of:")
     console.print(f"       [bold]{system_prompt}[/bold]")
 
     console.print()

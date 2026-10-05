@@ -11,13 +11,15 @@ Two responsibilities:
 relink_folder() is strictly additive: it never removes existing wikilinks
 or rewrites note bodies, only appends new entries into `## Related`.
 
-Introduced in the MAURICIO deployment.
+Introduced in the field deployment B.
 """
 
 import logging
 import re
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
+
+from .notes import frontmatter_aliases  # noqa: F401  (mora no notes; reexportada)
 
 logger = logging.getLogger("linker")
 
@@ -31,7 +33,7 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]\|#]+)(?:#[^\]\|]+)?(?:\|[^\]]+)?\]\]")
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 # Drop the ` _ <tail>` staging-truncation artifact (space-underscore-space, added
 # when a long source title was cut at the 50-char filename cap). Requires spaces
-# around the underscore so plain `_` word separators (Sara_Saad_-_2024) are kept.
+# around the underscore so plain `_` word separators (Ana_Lima_-_2024) are kept.
 _TRUNC_TAIL_RE  = re.compile(r"\s+_\s+\S.*$")
 
 
@@ -116,34 +118,6 @@ def strip_frontmatter(content: str) -> str:
         return content
     m = re.match(r"^---\n.*?\n---\n", content, re.DOTALL)
     return content[m.end():] if m else content
-
-
-def frontmatter_aliases(content: str) -> set:
-    """Return the set of Obsidian `aliases:` declared in a note's frontmatter.
-    Supports both block-list and inline `[a, b]` forms. Empty set if none."""
-    if not content.startswith("---\n"):
-        return set()
-    close = content.find("\n---\n", 4)
-    if close == -1:
-        return set()
-    fm = content[4:close]
-    # [^\S\n]* = horizontal whitespace only, so it never crosses the newline into
-    # the first block-list item (the bug that swallowed `- item` into group 1).
-    m = re.search(r"^aliases:[^\S\n]*(.*)$", fm, re.MULTILINE)
-    if not m:
-        return set()
-    out: set = set()
-    inline = m.group(1).strip()
-    if inline.startswith("["):                       # aliases: [a, b]
-        out |= {x.strip().strip('"').strip("'") for x in inline[1:-1].split(",")}
-    else:                                            # block list under aliases:
-        for line in fm[m.end():].splitlines():
-            lm = re.match(r"[^\S\n]*-\s+(.*\S)", line)
-            if lm:
-                out.add(lm.group(1).strip().strip('"').strip("'"))
-            elif line.strip() and not line[:1].isspace():
-                break                                # next top-level key → stop
-    return {a for a in out if a}
 
 
 def _alias_block(aliases: list) -> str:
@@ -253,7 +227,7 @@ def relink_folder(
       - Append new [[wikilinks]] under ## Related
       - Re-index the updated note
 
-    folder: vault-relative subpath (e.g. 'meetings/Gazin/2026' or 'meetings')
+    folder: vault-relative subpath (e.g. 'meetings/Nortex/2026' or 'meetings')
     days: restrict to notes modified within last N days (None = all)
     min_similarity: link threshold; defaults to cfg.search_threshold
     max_links_per_note: cap on new links added per note in this pass
@@ -278,7 +252,7 @@ def relink_folder(
     for f in target.rglob("*.md"):
         if cutoff is not None and f.stat().st_mtime < cutoff:
             continue
-        rel = str(f.relative_to(cfg.vault))
+        rel = f.relative_to(cfg.vault).as_posix()
         if VaultManager.classify_path(rel)[0] == "generated":
             continue
         md_files.append(f)
@@ -305,7 +279,7 @@ def relink_folder(
                 results["skipped"].append(f"{f.name}: empty body")
                 continue
 
-            self_path = str(f.relative_to(cfg.vault))
+            self_path = f.relative_to(cfg.vault).as_posix()
             already_linked = existing_targets(content)
 
             # scope='notes': this relinks the user's own writing to itself. An
@@ -352,7 +326,7 @@ def relink_folder(
             vault_manager.index_note(updated, {
                 "title": f.stem,
                 "path": self_path,
-                "folder": str(f.parent.relative_to(cfg.vault)),
+                "folder": f.parent.relative_to(cfg.vault).as_posix(),
             })
             results["updated"] += 1
             results["links_added"] += len(new_links)
